@@ -10,13 +10,16 @@
  - [Limitations](About/Limitations.md)
  - [COPYRIGHT](About/COPYRIGHT.md)
  - [LICENSE](About/LICENSE.md)
- - [SETUP](About/SETUP.md)
 
 ## Getting Started
 
  - [Getting Started with MaxScale](Getting-Started/Getting-Started-With-MaxScale.md)
  - [Building MaxScale from Source Code](Getting-Started/Building-MaxScale-from-Source-Code.md)
  - [Configuration Guide](Getting-Started/Configuration-Guide.md)
+
+## Upgrading MaxScale
+
+- [Upgrading MaxScale to 1.1.0](Upgrading-To-MaxScale-1.1.0.md)
 
 ## Reference
 
