@@ -1,4 +1,4 @@
-if(BUILD_TESTS)
+if(BUILD_TESTS OR BUILD_TOOLS)
   file(GLOB FULLCORE_SRC *.c)
   file(GLOB SCMD_SRC sescmd/*.c)
   add_library(fullcore STATIC ${FULLCORE_SRC} ${SCMD_SRC})
