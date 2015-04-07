@@ -66,11 +66,6 @@ typedef enum {
 #define TARGET_IS_ALL(t)          (t & TARGET_ALL)
 #define TARGET_IS_RLAG_MAX(t)     (t & TARGET_RLAG_MAX)
 
-typedef struct rses_property_st rses_property_t;
-typedef struct router_client_session ROUTER_CLIENT_SES;
-
-
-
 /**
  * This criteria is used when backends are chosen for a router session's use.
  * Backend servers are sorted to ascending order according to the criteria
@@ -154,7 +149,7 @@ typedef struct {
  */
 typedef struct router_instance {
 	SERVICE*                service;     /*< Pointer to service                 */
-	ROUTER_CLIENT_SES*      connections; /*< List of client connections         */
+	struct router_client_session*      connections; /*< List of client connections         */
 	SPINLOCK                lock;	     /*< Lock for the instance data         */
 	BACKEND**               servers;     /*< Backend servers                    */
 	BACKEND*                master;      /*< NULL or pointer                    */
