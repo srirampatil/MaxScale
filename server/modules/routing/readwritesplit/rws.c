@@ -269,7 +269,7 @@ ModuleInit()
 {
         LOGIF(LM, (skygw_log_write_flush(
                            LOGFILE_MESSAGE,
-                           "Initializing statemend-based read/write split router module.")));
+                           "Initializing statement-based read/write split router module.")));
         spinlock_init(&instlock);
         instances = NULL;
 }
@@ -292,7 +292,7 @@ ROUTER_OBJECT* GetModuleObject()
  * Refresh the instance by the given parameter value.
  * 
  * @param router	Router instance
- * @param singleparam	Parameter fo be reloaded
+ * @param singleparam	Parameter to be reloaded
  * 
  * Note: this part is not done. Needs refactoring.
  */
@@ -1129,7 +1129,7 @@ static uint8_t getCapabilities (
         ROUTER_CLIENT_SES* rses = (ROUTER_CLIENT_SES *)router_session;
         uint8_t            rc;
         
-        if (!rses_begin_locked_router_action(rses))
+        if (!spinlock_acquire_with_test(&rses->rses_lock, &rses->rses_closed, FALSE))
         {
                 rc = 0xff;
                 goto return_rc;
@@ -1275,7 +1275,7 @@ static void handleError (
                 {
 			SERVER* srv;
 			
-			if (!rses_begin_locked_router_action(rses))
+			if (!spinlock_acquire_with_test(&rses->rses_lock, &rses->rses_closed, FALSE))
 			{
 				*succp = false;
 				return;

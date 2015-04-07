@@ -44,8 +44,6 @@ bool route_session_write(
         ROUTER_INSTANCE*   inst,
         unsigned char      packet_type,
         skygw_query_type_t qtype);
-bool rses_begin_locked_router_action(
-        ROUTER_CLIENT_SES* rses);
 
 void rses_end_locked_router_action(
         ROUTER_CLIENT_SES* rses);
@@ -726,7 +724,7 @@ bool route_single_stmt(
 	
 	
 	/** Lock router session */
-	if (!rses_begin_locked_router_action(rses))
+	if (!spinlock_acquire_with_test(&rses->rses_lock, &rses->rses_closed, FALSE))
 	{
 		if (packet_type != MYSQL_COM_QUIT)
 		{
@@ -995,7 +993,7 @@ void handle_clientReply (
          * Lock router client session for secure read of router session members.
          * Note that this could be done without lock by using version #
          */
-        if (!rses_begin_locked_router_action(router_cli_ses))
+        if (!spinlock_acquire_with_test(&router_cli_ses->rses_lock, &router_cli_ses->rses_closed, FALSE))
         {
                 print_error_packet(router_cli_ses, buffer, backend_dcb);
                 goto lock_failed;
@@ -1016,7 +1014,7 @@ void handle_clientReply (
                 goto lock_failed;
 	}
 	/** Lock router session */
-        if (!rses_begin_locked_router_action(router_cli_ses))
+        if (!spinlock_acquire_with_test(&router_cli_ses->rses_lock, &router_cli_ses->rses_closed, FALSE))
         {
                 /** Log to debug that router was closed */
                 goto lock_failed;
@@ -1088,7 +1086,7 @@ void handle_clientReply (
         rses_end_locked_router_action(router_cli_ses);
         
         /** Lock router session */
-        if (!rses_begin_locked_router_action(router_cli_ses))
+        if (!spinlock_acquire_with_test(&router_cli_ses->rses_lock, &router_cli_ses->rses_closed, FALSE))
         {
                 /** Log to debug that router was closed */
                 goto lock_failed;
@@ -1186,7 +1184,7 @@ bool route_session_write(
                 int rc;
 
 		/** Lock router session */
-                if (!rses_begin_locked_router_action(router_cli_ses))
+                if (!spinlock_acquire_with_test(&router_cli_ses->rses_lock, &router_cli_ses->rses_closed, FALSE))
                 {
                         goto return_succp;
                 }
@@ -1221,7 +1219,7 @@ bool route_session_write(
                 goto return_succp;
         }
         /** Lock router session */
-        if (!rses_begin_locked_router_action(router_cli_ses))
+        if (!spinlock_acquire_with_test(&router_cli_ses->rses_lock, &router_cli_ses->rses_closed, FALSE))
         {
                 goto return_succp;
         }

@@ -24,8 +24,6 @@ extern int            lm_enabled_logfiles_bitmask;
 extern size_t         log_ses_count[];
 extern __thread       log_info_t tls_log_info;
 
-bool rses_begin_locked_router_action(
-        ROUTER_CLIENT_SES* rses);
 void rses_end_locked_router_action(
         ROUTER_CLIENT_SES* rses);
 rses_property_t* rses_property_init(
@@ -182,7 +180,7 @@ bool select_connect_backend_servers(
          * This command requires that rsession's lock is held.
          */
 
-	succp = rses_begin_locked_router_action(client_rses);
+	succp = spinlock_acquire_with_test(&client_rses->rses_lock, &client_rses->rses_closed, FALSE);
 
         if(!succp)
 	{
@@ -287,13 +285,12 @@ return_rses:
         /**
          * Lock router client session for secure read and update.
          */
-        if (!router_cli_ses->rses_closed &&
-                rses_begin_locked_router_action(router_cli_ses))
+        if (spinlock_acquire_with_test(&router_cli_ses->rses_lock, &router_cli_ses->rses_closed, FALSE))
         {
 		int i;
                 /** 
                  * This sets router closed. Nobody is allowed to use router
-                 * whithout checking this first.
+                 * without checking this first.
                  */
                 router_cli_ses->rses_closed = true;
 
@@ -515,43 +512,6 @@ void rses_property_add(
                 }
                 p->rses_prop_next = prop;
         }
-}
-
-/** 
- * @node Acquires lock to router client session if it is not closed.
- *
- * Parameters:
- * @param rses - in, use
- *          
- *
- * @return true if router session was not closed. If return value is true
- * it means that router is locked, and must be unlocked later. False, if
- * router was closed before lock was acquired.
- *
- * 
- * @details (write detailed description here)
- *
- */
-bool rses_begin_locked_router_action(
-        ROUTER_CLIENT_SES* rses)
-{
-        bool succp = false;
-        
-        CHK_CLIENT_RSES(rses);
-
-        if (rses->rses_closed) {
-                
-                goto return_succp;
-        }       
-        spinlock_acquire(&rses->rses_lock);
-        if (rses->rses_closed) {
-                spinlock_release(&rses->rses_lock);
-                goto return_succp;
-        }       
-        succp = true;
-        
-return_succp:
-        return succp;
 }
 
 /** to be inline'd */
