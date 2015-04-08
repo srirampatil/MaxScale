@@ -128,9 +128,9 @@ spinlock_acquire_nowait(SPINLOCK *lock)
 int
 spinlock_acquire_with_test(SPINLOCK *lock, int *value_to_test, int should_be)
 {
-    if (!(value_to_test ^ should_be)) {
+    if (!(*value_to_test ^ should_be)) {
         spinlock_acquire(lock);
-        if (!(value_to_test ^ should_be)) return TRUE;
+        if (!(*value_to_test ^ should_be)) return TRUE;
         else spinlock_release(lock);
     }
     return FALSE;
