@@ -17,7 +17,7 @@
  */
 
 #include <router.h>
-
+#include <galerarouter.h>
 MODULE_INFO 	info = {
 	MODULE_API_ROUTER,
 	MODULE_GA,
@@ -81,31 +81,88 @@ static ROUTER_OBJECT MyObject = {
 
 static ROUTER* createInstance(SERVICE *service, char **options)
 {
-    // Populate router instance structure
+    GALERA_INSTANCE* inst;
 
-    // Read additional options for the router, whether to split read load or not
-    
+    if((inst = malloc(sizeof(GALERA_INSTANCE))))
+    {
+	inst->service = service;
+	inst->safe_reads = false;
+
+	if(options)
+	{
+	    int i;
+	    for(i = 0;options[i];i++)
+	    {
+		if(strcmp(options[i],"safe_reads") == 0)
+		{
+		    inst->safe_reads = true;
+		}
+	    }
+	}
+    }
+
+    return inst;
 }
 
 static void* newSession(ROUTER *instance, SESSION *session)
 {
-    // Populate router session structure
+    GALERA_INSTANCE* inst = (GALERA_INSTANCE*)instance;
+    GALERA_SESSION* ses = NULL;
+    SERVER_REF* sref;
+    DCB* dcb;
+    if((ses = (GALERA_SESSION*)malloc(sizeof(GALERA_SESSION))) != NULL)
+    {
+	ses->autocommit = true;
+	ses->trx_open = false;
+	
+	if((ses->nodes = slist_init()))
+	{
+	    free(ses);
+	    skygw_log_write_flush(LOGFILE_ERROR,"Error: Slist initialization failed.");
+	    return NULL;
+	}
 
-    // Connect to each available node
+	sref = inst->service->dbref;
 
-    // Set session to open state
+	while(sref)
+	{
+	    if((dcb = dcb_connect(sref->server,
+			     session,
+			     sref->server->protocol)))
+	    {
+		slcursor_add_data(ses->nodes,(void*)dcb);
+	    }
+
+	    sref = sref->next;
+	}
+
+	ses->closed = false;
+    }
+    return ses;
 }
 
 static void closeSession(ROUTER *instance, void *session)
 {
-    // Close open connections to nodes
+    GALERA_SESSION* ses = session;
 
-    // Set session into closed state
+    slcursor_move_to_begin(ses->nodes);
+
+    // Add checks for closed router session
+
+    while(slcursor_step_ahead(ses->nodes))
+    {
+	DCB* dcb = slcursor_get_data(ses->nodes);
+	dcb_close(dcb);
+    }
+
+    ses->closed = true;
 }
 
 static void freeSession(ROUTER *instance, void *session)
 {
-    // Free allocated memory
+    GALERA_SESSION* ses = session;
+    slist_done(ses->nodes);
+    free(ses);
 }
 
 static int routeQuery(ROUTER *instance, void *session, GWBUF *queue)
@@ -113,6 +170,8 @@ static int routeQuery(ROUTER *instance, void *session, GWBUF *queue)
     // Check if the session is closed, if so, return 0
 
     // Resolve query type, is it a read or a write
+
+    // If query is BEGIN, store it for later, return 1
 
     // If the query is a read and router load balances reads, send to lowest connection count node and return 1
 
@@ -137,6 +196,9 @@ static void clientReply(
                         DCB* backend_dcb)
 {
     // If a session command was sent, process reply
+
+    // If a queued query was stored, send it to the node
+
     // Return reply to client if the client is waiting for one
 }
 

@@ -2176,3 +2176,22 @@ strip_escape_chars (char* val)
     }
   return true;
 }
+
+/**
+* Calculate a hash value for a null-terminated string.
+* @param key String to hash
+* @return Hash value of the string
+*/
+int simple_str_hash(char* key)
+{
+  if(key == NULL){
+    return 0;
+  }
+  int hash = 0,c = 0;
+  char* ptr = key;
+  while((c = *ptr++)){
+    hash = c + (hash << 6) + (hash << 16) - hash;
+  }
+
+  return hash;
+}

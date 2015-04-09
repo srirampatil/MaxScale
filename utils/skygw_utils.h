@@ -202,6 +202,7 @@ char* replace_literal(char* haystack,
                       const char* replacement);
 bool is_valid_posix_path(char* path);
 bool strip_escape_chars(char*);
+int simple_str_hash(char* key);
 EXTERN_C_BLOCK_END
 
 #endif /* SKYGW_UTILS_H */

@@ -29,16 +29,22 @@
  * @endverbatim
  */
 
+#include <skygw_utils.h>
+#include <skygw_types.h>
+#include <mysql_client_server_protocol.h>
 typedef struct galera_instance_t{
-// References to all nodes
-// 
+  SERVICE* service; /*< Owning service */
+  bool safe_reads; /*< If reads should be guaranteed to return up to date data */
 }GALERA_INSTANCE;
 
 typedef struct galera_session_t{
-// Transaction open or not
-// Autocommit on or off
-// Current database (This should be done somewhere else than the router)
-// Session commands)
+  SESSION* session; /*< Owning session */
+  slist_cursor_t* nodes; /*< A list of all the connected DCBs */
+  DCB* active_node;/*< Active node */
+  bool trx_open; /*< Transaction open or not */
+  bool autocommit; /*< Autocommit on or off */
+  bool closed; /*< If session is ready for routing queries */
+/*< Session commands */
 }GALERA_SESSION;
 
 #endif
