@@ -88,7 +88,6 @@ endif()
 
 if(BUILD_TOOLS)
   message(STATUS "Building extra tools")
-  add_definitions("-DBUILD_TOOLS")
 endif()
 
 set(CMAKE_C_FLAGS "${FLAGS}")

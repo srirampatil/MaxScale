@@ -18,6 +18,11 @@
 
 #include <router.h>
 #include <galerarouter.h>
+#include <query_classifier.h>
+
+/** This includes the log manager thread local variables */
+LOG_MANAGER_TLS
+
 MODULE_INFO 	info = {
 	MODULE_API_ROUTER,
 	MODULE_GA,
@@ -87,6 +92,7 @@ static ROUTER* createInstance(SERVICE *service, char **options)
     {
 	inst->service = service;
 	inst->safe_reads = false;
+	spinlock_init(&inst->lock);
 
 	if(options)
 	{
@@ -114,8 +120,13 @@ static void* newSession(ROUTER *instance, SESSION *session)
     {
 	ses->autocommit = true;
 	ses->trx_open = false;
+	ses->active_node = NULL;
+	ses->queue = NULL;
+	ses->closed = false;
+	ses->session = session;
+	spinlock_init(&ses->lock);
 	
-	if((ses->nodes = slist_init()))
+	if((ses->nodes = slist_init()) == NULL)
 	{
 	    free(ses);
 	    skygw_log_write_flush(LOGFILE_ERROR,"Error: Slist initialization failed.");
@@ -136,51 +147,138 @@ static void* newSession(ROUTER *instance, SESSION *session)
 	    sref = sref->next;
 	}
 
-	ses->closed = false;
+	if(slist_size(ses->nodes) == 0)
+	{
+	    slist_done(ses->nodes);
+	    free(ses);
+	    skygw_log_write(LOGFILE_ERROR,"Session creation failed: All attempts to connect to servers failed.");
+	    return NULL;
+	}
+
+	ses->sescmd = sescmdlist_allocate();
+	if(ses->sescmd == NULL)
+	{
+	    slist_done(ses->nodes);
+	    free(ses);
+	    skygw_log_write(LOGFILE_ERROR,"Session creation failed: Failed to allocate session command list.");
+	}
+
     }
     return ses;
 }
 
 static void closeSession(ROUTER *instance, void *session)
 {
-    GALERA_SESSION* ses = session;
-
-    slcursor_move_to_begin(ses->nodes);
-
-    // Add checks for closed router session
-
-    while(slcursor_step_ahead(ses->nodes))
+    GALERA_SESSION* ses = (GALERA_SESSION*)session;
+    if(spinlock_acquire_with_test(&ses->lock,&ses->closed,false))
     {
-	DCB* dcb = slcursor_get_data(ses->nodes);
-	dcb_close(dcb);
-    }
+	slcursor_move_to_begin(ses->nodes);
 
-    ses->closed = true;
+	do
+	{
+	    DCB* dcb = slcursor_get_data(ses->nodes);
+	    dcb_close(dcb);
+	    slcursor_remove_data(ses->nodes);
+	}while(slcursor_step_ahead(ses->nodes));
+
+	ses->closed = true;
+	spinlock_release(&ses->lock);
+    }
 }
 
 static void freeSession(ROUTER *instance, void *session)
 {
-    GALERA_SESSION* ses = session;
+    GALERA_SESSION* ses = (GALERA_SESSION*)session;
     slist_done(ses->nodes);
     free(ses);
 }
 
-static int routeQuery(ROUTER *instance, void *session, GWBUF *queue)
+static int routeQuery(ROUTER *instance, void *session, GWBUF *query)
 {
-    // Check if the session is closed, if so, return 0
+    int i,hash,rval = 0;
+    GALERA_SESSION* ses = (GALERA_SESSION*)session;
+    GALERA_INSTANCE* inst = (GALERA_INSTANCE*)instance;
+    skygw_query_type_t qtype = QUERY_TYPE_UNKNOWN;
+    DCB* dcb;
 
-    // Resolve query type, is it a read or a write
+    if(spinlock_acquire_with_test(&ses->lock,&ses->closed,false))
+    {
+	qtype = query_classifier_get_type(query);
 
-    // If query is BEGIN, store it for later, return 1
+	/** Treat reads as writes, guarantees consistent reads*/
 
+	if(inst->safe_reads)
+	    qtype |= QUERY_TYPE_WRITE;
+
+	if(QUERY_IS_TYPE(qtype,QUERY_TYPE_BEGIN_TRX))
+	{
+	    /** BEGIN statement of a new transaction,
+	     * store it and wait for the next query. */
+
+	    if(ses->queue)
+		gwbuf_free(ses->queue);
+
+	    ses->trx_open = true;
+	    ses->queue = query;
+	    rval = 1;
+	}
+	else if(skygw_is_session_command(query))
+	{
+
+	    /** Session command handling */
+
+	    sescmdlist_add_command(ses->sescmd,query);
+	    route_sescmd(ses->nodes,query);
+	    gwbuf_free(query);
+
+	    if(MYSQL_IS_COM_QUIT(query->start))
+		rval = 0;
+	}
+	else if(ses->trx_open)
+	{
+	    /** Open transaction in progress */
+
+	    if(ses->active_node == NULL)
+	    {
+		/** No chosen node yet, hash the query and send it to the server. */
+
+		hash = hash_query_by_table(query,slist_size(ses->nodes));
+		dcb = get_dcb_from_hash(ses->nodes,hash);
+		ses->active_node = dcb;
+		rval = dcb->func.write(dcb,ses->queue);
+		ses->queue = query;
+	    }
+	    else
+	    {
+		/** We have an active node, route query there. */
+
+		if(SERVER_IS_JOINED(ses->active_node->server))
+		{
+		    dcb = ses->active_node;
+		    rval = dcb->func.write(dcb,query);
+		}
+
+		if(QUERY_IS_TYPE(qtype, QUERY_TYPE_COMMIT) ||
+		 QUERY_IS_TYPE(qtype, QUERY_TYPE_ROLLBACK))
+		{
+		    ses->trx_open = false;
+		    ses->active_node = NULL;
+		}
+	    }
+	}
+	else if (QUERY_IS_TYPE(qtype,QUERY_TYPE_WRITE))
+	{
+	    hash = hash_query_by_table(query,slist_size(ses->nodes));
+	    dcb = get_dcb_from_hash(ses->nodes,hash);
+	    rval = dcb->func.write(dcb,ses->queue);
+	}
+   
     // If the query is a read and router load balances reads, send to lowest connection count node and return 1
 
-    // If the query is a write or the router doesn't load balance reads, get the name of the database and the table
-    // and feed them into the hashing algorithm
+	spinlock_release(&ses->lock);
+    }
 
-    // Based on the output of the hashing function and the number of synced nodes, send the query to a node, return 1
-
-    // If the query is a session command, send to all nodes and return 1
+    return rval;
 }
 
 static void diagnostic(ROUTER *instance, DCB *dcb)
@@ -216,5 +314,5 @@ static uint8_t getCapabilities (
                                 ROUTER* inst,
                                 void* router_session)
 {
-    // Return requirement for statement based routing
+    return RCAP_TYPE_STMT_INPUT;
 }

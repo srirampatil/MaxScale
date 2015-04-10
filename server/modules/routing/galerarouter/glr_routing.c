@@ -1,11 +1,54 @@
+/*
+ * This file is distributed as part of the MariaDB Corporation MaxScale.  It is free
+ * software: you can redistribute it and/or modify it under the terms of the
+ * GNU General Public License as published by the Free Software Foundation,
+ * version 2.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program; if not, write to the Free Software Foundation, Inc., 51
+ * Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *
+ * Copyright MariaDB Corporation Ab 2015
+ */
+
+/**
+ * @file glr_routing.c Galera router routing functions
+ *
+ * This file contains functions used for routing queries to backend servers.
+ *
+ * @verbatim
+ * Revision History
+ *
+ * Date			Who				Description
+ * 07/04/2015	Markus Makela	Initial implementation
+ *
+ * @endverbatim
+ */
+
 #include <galerarouter.h>
 #include <stdlib.h>
 #include <skygw_utils.h>
 #include <query_classifier.h>
+#include <strings.h>
+#include <modutil.h>
 
-int hash_query(GWBUF* query, int nodes)
+/** This includes the log manager thread local variables */
+LOG_MANAGER_TLS
+
+/**
+ * Hash a query based on the tables it targets.
+ * @param query Query to hash
+ * @param nodes Number of valid nodes
+ * @return number of the node the query is assigned to
+ */
+int hash_query_by_table(GWBUF* query, int nodes)
 {
-    int tsize = 0;
+    int i,hash,val,tsize = 0;
     char** tables;
 
     if(!query_is_parsed(query))
@@ -16,13 +59,98 @@ int hash_query(GWBUF* query, int nodes)
     tables = skygw_get_table_names(query,&tsize,true);
 
     if(tsize < 1)
+    {
 	return 0;
-    
-    int hash = simple_str_hash(tables[0]);
-    return hash != 0 ? abs(hash % nodes) : 0;
+    }
+    qsort(tables,tsize, sizeof(char*),(int(*)(const void*, const void*))strcasecmp);
+    hash = simple_str_hash(tables[0]);
+    hash = hash != 0 ? abs(hash % nodes) : 0;
+
+    /** This is only for trace logging, for now.
+     * Consider concatenating all db.table strings into a single string */
+
+    if (tsize > 1 &&
+	LOG_IS_ENABLED(LOGFILE_TRACE))
+    {
+	for(i = 0;i<tsize;i++)
+	{
+	    val = simple_str_hash(tables[i]);
+	    val = val != 0 ? abs(val % nodes) : 0;
+	    if(val != hash)
+	    {
+		char *str = modutil_get_SQL(query);
+		skygw_log_write(LOGFILE_TRACE,
+			 "Warning, executing statement with cross-node tables: %s",
+			 str);
+		free(str);
+	    }
+	}
+    }
+
+    for(i = 0;i<tsize;i++)
+	free(tables[i]);
+    free(tables);
+
+    return hash;
 }
 
-#ifdef BUILD_TOOLS
+/**
+ * Route a query to each node in the slist. This function assumes that the data
+ * held in the slist contains pointers to DCBs each with an open connection to
+ * a server. The buffer is cloned for each node so the caller should free the
+ * original buffer.
+ * @param cursor List of DCBs to use
+ * @param buffer Buffer to route
+ * @return Number of sent queries
+ */
+int route_sescmd(slist_cursor_t* cursor,GWBUF* buffer)
+{
+    DCB *dcb;
+    GWBUF* clone;
+    int rval = 0;
+
+    slcursor_move_to_begin(cursor);
+
+    do{
+	dcb = slcursor_get_data(cursor);
+	SCMDCURSOR* cursor = dcb_get_sescmdcursor(dcb);
+
+	if(SERVER_IS_JOINED(dcb->server))
+	{
+	    if(!sescmdlist_execute(cursor))
+	    {
+		skygw_log_write(LOGFILE_ERROR,"Error: Failed to write session command to '%s'.",
+			 dcb->server->name);
+	    }
+	    else
+	    {
+		rval++;
+	    }
+	}
+    }while(slcursor_step_ahead(cursor));
+
+    return rval;
+}
+
+/**
+ * Return the DCB associated with the node number.
+ * @param cursor slist with DCBs as data
+ * @param node Number of the node
+ * @return Pointer to the DCB at position of node
+ */
+DCB* get_dcb_from_hash(slist_cursor_t* cursor, int node)
+{
+    int i;
+    
+    slcursor_move_to_begin(cursor);
+
+    for(i = 0;i < node;i++)
+	slcursor_step_ahead(cursor);
+
+    return (DCB*)slcursor_get_data(cursor);
+}
+
+#if BUILD_TOOLS
 
 #include <modutil.h>
 #include <getopt.h>
@@ -39,16 +167,16 @@ static char* server_options[] = {
     "--language=.",
     "--skip-innodb",
     "--default-storage-engine=myisam",
-	NULL
+    NULL
 };
 
 const int num_elements = (sizeof(server_options) / sizeof(char *)) - 1;
 
 static char* server_groups[] = {
-	"embedded",
-	"server",
-	"server",
-	NULL
+    "embedded",
+    "server",
+    "server",
+    NULL
 };
 
 int main(int argc,char** argv)
@@ -84,7 +212,7 @@ int main(int argc,char** argv)
     }
 
     GWBUF* buffer = modutil_create_query(argv[1]);
-    int hval = hash_query(buffer,atoi(argv[2]));
+    int hval = hash_query_by_table(buffer,atoi(argv[2]));
     printf("Query routed to node %d\n",hval);
     gwbuf_free(buffer);
     return 0;

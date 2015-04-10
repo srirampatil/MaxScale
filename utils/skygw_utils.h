@@ -85,8 +85,9 @@ EXTERN_C_BLOCK_BEGIN
 
 slist_cursor_t* slist_init(void);
 void slist_done(slist_cursor_t* c);
-
+size_t slist_size(slist_cursor_t* c);
 void slcursor_add_data(slist_cursor_t* c, void* data);
+void slcursor_remove_data(slist_cursor_t* c);
 void* slcursor_get_data(slist_cursor_t* c);
 
 bool slcursor_move_to_begin(slist_cursor_t* c);

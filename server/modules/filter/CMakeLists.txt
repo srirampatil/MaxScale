@@ -42,7 +42,7 @@ endif()
 
 if(BUILD_TOOLS)
   add_executable(ruleparser dbfwfilter.c)
-  target_compile_definitions(ruleparser PUBLIC "BUILD_RULE_PARSER")
+  target_compile_definitions(ruleparser PUBLIC "BUILD_TOOLS")
   target_link_libraries(ruleparser  ${EMBEDDED_LIB} log_manager utils query_classifier fullcore)
   install(TARGETS ruleparser DESTINATION tools)
 endif()

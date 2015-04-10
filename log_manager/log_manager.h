@@ -56,6 +56,10 @@ typedef struct log_info_st
 #define LT LOGFILE_TRACE
 #define LD LOGFILE_DEBUG
 
+#define LOG_MANAGER_TLS extern int lm_enabled_logfiles_bitmask;\
+        extern size_t log_ses_count[];\
+extern __thread log_info_t tls_log_info;
+
 /** 
  * Check if specified log type is enabled in general or if it is enabled
  * for the current session.
