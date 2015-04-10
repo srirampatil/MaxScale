@@ -255,6 +255,7 @@ typedef struct dcb {
 	SPINLOCK	cb_lock;	/**< The lock for the callbacks linked list */
 	DCB_CALLBACK	*callbacks;	/**< The list of callbacks for the DCB */
 	SPINLOCK	pollinlock;
+        void*           cursor;         /*< Sesson command cursor */
 	int		pollinbusy;
 	int		readcheck;
 
@@ -331,6 +332,9 @@ int		dcb_add_callback(DCB *, DCB_REASON, int	(*)(struct dcb *, DCB_REASON, void 
 int		dcb_remove_callback(DCB *, DCB_REASON, int (*)(struct dcb *, DCB_REASON, void *),
 			 void *);
 int		dcb_isvalid(DCB *);			/* Check the DCB is in the linked list */
+
+void           *dcb_get_sescmdcursor(DCB*);
+
 int		dcb_count_by_usage(DCB_USAGE);		/* Return counts of DCBs */
 
 bool   dcb_set_state(DCB* dcb, dcb_state_t new_state, dcb_state_t* old_state);

@@ -115,6 +115,27 @@ spinlock_acquire_nowait(SPINLOCK *lock)
     return TRUE;
 }
 
+/**
+ * Acquire a spinlock if a boolean conforms to the "should be" value and 
+ * it is not already locked and the boolean remains conformant with the
+ * "should be" value. The boolean parameters are not assumed to be 0 or 1.
+ *
+ * @param lock The spinlock to acquire
+ * @param value_to_test A pointer to a boolean to be tested
+ * @param should_be A boolean value that the previous parameter should match
+ * @return True if the spinlock was acquired, otherwise false
+ */
+int
+spinlock_acquire_with_test(SPINLOCK *lock, int *value_to_test, int should_be)
+{
+    if (!(*value_to_test ^ should_be)) {
+        spinlock_acquire(lock);
+        if (!(*value_to_test ^ should_be)) return TRUE;
+        else spinlock_release(lock);
+    }
+    return FALSE;
+}
+
 /*
  * Release a spinlock.
  *

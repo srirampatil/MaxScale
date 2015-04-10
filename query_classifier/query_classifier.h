@@ -116,7 +116,7 @@ bool			skygw_query_has_clause(GWBUF* buf);
 char*           skygw_get_qtype_str(skygw_query_type_t qtype);
 char*			skygw_get_affected_fields(GWBUF* buf);
 char** skygw_get_database_names(GWBUF* querybuf,int* size);
-
+bool skygw_is_session_command(GWBUF* buf);
 EXTERN_C_BLOCK_END
 
 #endif

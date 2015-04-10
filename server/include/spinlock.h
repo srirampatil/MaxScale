@@ -74,6 +74,7 @@ typedef struct spinlock {
 extern void	spinlock_init(SPINLOCK *lock);
 extern void	spinlock_acquire(SPINLOCK *lock);
 extern int	spinlock_acquire_nowait(SPINLOCK *lock);
+extern int	spinlock_acquire_with_test(SPINLOCK *lock, int *value_to_test, int should_be);
 extern void	spinlock_release(SPINLOCK *lock);
 extern void	spinlock_stats(SPINLOCK *lock, 
 			void (*reporter)(void *, char *, int), void *hdl);
