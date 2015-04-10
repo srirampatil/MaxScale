@@ -2101,7 +2101,7 @@ diagnostic(FILTER *instance, void *fsession, DCB *dcb)
     }
 }
 
-#ifdef BUILD_RULE_PARSER
+#ifdef BUILD_TOOLS
 #include <test_utils.h>
 
 int main(int argc, char** argv)

@@ -1,5 +1,9 @@
 if(BUILD_TESTS OR BUILD_TOOLS)
-  file(GLOB FULLCORE_SRC *.c)
+  set(FULLCORE_SRC atomic.c buffer.c spinlock.c secrets.c utils.c
+	gw_utils.c utils.c dcb.c load_utils.c session.c service.c server.c 
+	poll.c config.c users.c hashtable.c dbusers.c thread.c gwbitmask.c 
+	monitor.c adminusers.c secrets.c filter.c modutil.c hint.c
+	housekeeper.c memlog.c resultset.c)
   add_library(fullcore STATIC ${FULLCORE_SRC})
   target_link_libraries(fullcore ${CURL_LIBRARIES} log_manager utils pthread ${EMBEDDED_LIB} ssl aio rt crypt dl crypto inih z m stdc++)
 endif()

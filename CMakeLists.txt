@@ -86,6 +86,10 @@ if(FAKE_CODE)
   set(FLAGS "${FLAGS} -DFAKE_CODE" CACHE STRING "Compilation flags")
 endif()
 
+if(BUILD_TOOLS)
+  message(STATUS "Building extra tools")
+  add_definitions("-DBUILD_TOOLS")
+endif()
 
 set(CMAKE_C_FLAGS "${FLAGS}")
 set(CMAKE_C_FLAGS_DEBUG "${DEBUG_FLAGS} -DSS_DEBUG")
