@@ -141,7 +141,15 @@ bool select_connect_backend_servers(
         }
         
 	client_rses->rses_sescmd_list->semantics = router->semantics;
-	
+
+	if((client_rses->rses_tmptable = tmptable_init()) == NULL)
+	{
+	    sescmdlist_free(client_rses->rses_sescmd_list);
+	    free(client_rses);
+            client_rses = NULL;
+            goto return_rses;
+	}
+
         /**
          * Create backend reference objects for this session.
          */
@@ -391,6 +399,7 @@ void handle_freeSession(
          * to the client session.
          */
         sescmdlist_free(router_cli_ses->rses_sescmd_list);
+	tmptable_free(router_cli_ses->rses_tmptable);
         free(router_cli_ses->rses_backend_ref);
 	free(router_cli_ses);
         return;

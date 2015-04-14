@@ -22,6 +22,7 @@
  * 
  */
 
+#define EMBEDDED_LIB_DB_NAME "skygw_virtual" /*< Name of the embedded library's own database */
 #define EMBEDDED_LIBRARY
 #define MYSQL_YACC
 #define MYSQL_LEX012
@@ -357,7 +358,7 @@ static bool create_parse_tree(
 {
         Parser_state parser_state;
         bool         failp = FALSE;
-        const char*  virtual_db = "skygw_virtual";
+        const char*  virtual_db = EMBEDDED_LIB_DB_NAME;
 
 	if (parser_state.init(thd, thd->query(), thd->query_length())) 
 	{
@@ -1078,7 +1079,7 @@ char** skygw_get_table_names(GWBUF* querybuf, int* tblsize, bool fullnames)
 				if(fullnames)
 				{
 					if (tbl->db && 
-						strcmp(tbl->db,"skygw_virtual") != 0)
+						strcmp(tbl->db,EMBEDDED_LIB_DB_NAME) != 0)
 					{
 						catnm = (char*)calloc(strlen(tbl->db) + 
 							strlen(tbl->table_name) + 
@@ -1110,7 +1111,8 @@ retblock:
 }
 
 /**
- * Extract, allocate memory and copy the name of the created table.
+ * Extract, allocate memory and copy the name of the created table. The name
+ * includes the database if it was explicitly stated in it.
  * @param querybuf Buffer to use.
  * @return A pointer to the name if a table was created, otherwise NULL
  */
@@ -1126,8 +1128,24 @@ char* skygw_get_created_table_name(GWBUF* querybuf)
 	if (lex->create_last_non_select_table && 
 		lex->create_last_non_select_table->table_name)
 	{
-		char* name = strdup(lex->create_last_non_select_table->table_name);
-		return name;
+
+
+            if(lex->create_last_non_select_table->db &&
+               strcmp(lex->create_last_non_select_table->db,
+                      EMBEDDED_LIB_DB_NAME) != 0)
+            {
+                int len = strlen(lex->create_last_non_select_table->table_name) +
+                strlen(lex->create_last_non_select_table->db) + 2;
+                char* name;
+                if((name = (char*)malloc(sizeof(char)*len)))
+                {
+                    sprintf(name,"%s.%s",lex->create_last_non_select_table->db,
+                            lex->create_last_non_select_table->table_name);
+                }
+                return name;
+            }
+
+            return strdup(lex->create_last_non_select_table->table_name);
 	}
 	else
 	{
@@ -1600,7 +1618,7 @@ char** skygw_get_database_names(GWBUF* querybuf,int* size)
 
 		while(tbl)
 		{
-			if(strcmp(tbl->db,"skygw_virtual") != 0)
+			if(strcmp(tbl->db,EMBEDDED_LIB_DB_NAME) != 0)
 			{
 				if(i>= currsz)
 				{
