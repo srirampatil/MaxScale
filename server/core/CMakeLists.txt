@@ -6,7 +6,7 @@ if(BUILD_TESTS OR BUILD_TOOLS)
 	housekeeper.c memlog.c resultset.c sescmd/sescmd.c sescmd/sescmd_cursor.c
     sescmd/sescmd_list.c)
   add_library(fullcore STATIC ${FULLCORE_SRC})
-  target_link_libraries(fullcore ${CURL_LIBRARIES} log_manager utils pthread ${EMBEDDED_LIB} ssl aio rt crypt dl crypto inih z m stdc++)
+  target_link_libraries(fullcore ${CURL_LIBRARIES} log_manager utils pthread ${EMBEDDED_LIB} ${PCRE_LINK_FLAGS} ssl aio rt crypt dl crypto inih z m stdc++)
 endif()
 
 add_executable(maxscale atomic.c buffer.c spinlock.c gateway.c
@@ -14,7 +14,7 @@ add_executable(maxscale atomic.c buffer.c spinlock.c gateway.c
 	poll.c config.c users.c hashtable.c dbusers.c thread.c gwbitmask.c 
 	monitor.c adminusers.c secrets.c filter.c modutil.c hint.c resultset.c
 	housekeeper.c memlog.c sescmd/sescmd.c sescmd/sescmd_list.c sescmd/sescmd_cursor.c)
-target_link_libraries(maxscale ${EMBEDDED_LIB} ${CURL_LIBRARIES} log_manager utils ssl aio pthread crypt dl crypto inih z rt m stdc++)
+target_link_libraries(maxscale ${EMBEDDED_LIB} ${PCRE_LINK_FLAGS} ${CURL_LIBRARIES} log_manager utils ssl aio pthread crypt dl crypto inih z rt m stdc++)
 
 install(TARGETS maxscale DESTINATION bin)
 

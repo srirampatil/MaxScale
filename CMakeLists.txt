@@ -19,7 +19,7 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake")
 project(MaxScale)
 
 #Disabled for now pending evaluation
-#include(CheckPlatform.cmake) 
+include(cmake/CheckPlatform.cmake) 
 
 check_deps()
 check_dirs()
@@ -90,6 +90,10 @@ if(BUILD_TOOLS)
   message(STATUS "Building extra tools")
 endif()
 
+if(PROFILE)
+  set(FLAGS "${FLAGS} -pg " CACHE STRING "Compilation flags")
+endif()
+
 set(CMAKE_C_FLAGS "${FLAGS}")
 set(CMAKE_C_FLAGS_DEBUG "${DEBUG_FLAGS} -DSS_DEBUG")
 set(CMAKE_C_FLAGS_RELEASE "")
@@ -142,6 +146,7 @@ install(FILES ${CMAKE_BINARY_DIR}/UpgradingToMaxScale110.txt DESTINATION .)
 message(STATUS "Installing MaxScale to: ${CMAKE_INSTALL_PREFIX}/")
 
 install(FILES server/MaxScale_template.cnf DESTINATION etc)
+install(FILES server/MaxScale_BinlogServer_template.cnf DESTINATION etc)
 install(FILES ${ERRMSG} DESTINATION mysql)
 install(FILES ${CMAKE_SOURCE_DIR}/COPYRIGHT DESTINATION .)
 install(FILES ${CMAKE_SOURCE_DIR}/README DESTINATION .)
