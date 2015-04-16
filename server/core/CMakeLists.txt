@@ -9,6 +9,11 @@ if(BUILD_TESTS OR BUILD_TOOLS)
   target_link_libraries(fullcore ${CURL_LIBRARIES} log_manager utils pthread ${EMBEDDED_LIB} ${PCRE_LINK_FLAGS} ssl aio rt crypt dl crypto inih z m stdc++)
 endif()
 
+# This could be moved to modules/routing/common directory
+# and instead of linking it to MaxScale, link it to the module
+set(SCMD_SRC "${CMAKE_CURRENT_SOURCE_DIR}/sescmd/sescmd.c ${CMAKE_CURRENT_SOURCE_DIR}/sescmd/sescmd_list.c ${CMAKE_CURRENT_SOURCE_DIR}/sescmd/sescmd_cursor.c"
+  CACHE INTERNAL "Path to session command sources")
+
 add_executable(maxscale atomic.c buffer.c spinlock.c gateway.c
 	gw_utils.c utils.c dcb.c load_utils.c session.c service.c server.c 
 	poll.c config.c users.c hashtable.c dbusers.c thread.c gwbitmask.c 

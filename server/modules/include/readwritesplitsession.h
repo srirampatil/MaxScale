@@ -111,6 +111,7 @@ struct router_client_session {
         bool             rses_autocommit_enabled;
         bool             rses_transaction_active;
         SCMDLIST*        rses_sescmd_list; /*< Session commands */
+        TMPTABLE*        rses_tmptable; /*< Temporary tables*/
 	struct router_instance	 *router;	/*< The router instance */
         struct router_client_session* next;
 #if defined(SS_DEBUG)
