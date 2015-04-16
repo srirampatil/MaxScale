@@ -20,6 +20,8 @@
 #include <galerarouter.h>
 #include <query_classifier.h>
 
+#include "common/routeresolution.h"
+
 /** This includes the log manager thread local variables */
 LOG_MANAGER_TLS
 
@@ -200,10 +202,13 @@ static int routeQuery(ROUTER *instance, void *session, GWBUF *query)
     GALERA_INSTANCE* inst = (GALERA_INSTANCE*)instance;
     skygw_query_type_t qtype = QUERY_TYPE_UNKNOWN;
     DCB* dcb;
-
+    mysql_server_cmd_t command;
+    route_target_t target;
     if(spinlock_acquire_with_test(&ses->lock,&ses->closed,false))
     {
-	qtype = query_classifier_get_type(query);
+	command = MYSQL_GET_COMMAND(query->start);
+	qtype = resolve_query_type(query,command);
+	target = get_route_target(qtype,ses->trx_open,false,NULL);
 
 	/** Treat reads as writes, guarantees consistent reads*/
 
@@ -266,7 +271,7 @@ static int routeQuery(ROUTER *instance, void *session, GWBUF *query)
 		}
 	    }
 	}
-	else if (QUERY_IS_TYPE(qtype,QUERY_TYPE_WRITE))
+	else if (target == TARGET_MASTER || target == TARGET_UNDEFINED)
 	{
 	    hash = hash_query_by_table(query,slist_size(ses->nodes));
 	    dcb = get_dcb_from_hash(ses->nodes,hash);
