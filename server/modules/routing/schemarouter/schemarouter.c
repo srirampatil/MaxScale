@@ -280,8 +280,8 @@ char* get_lenenc_str(void* data, int* len)
             break;
         case 0xfe:
             size = *ptr + ((*(ptr + 2) << 8)) + (*(ptr + 3) << 16) +
-                    (*(ptr + 4) << 24) + (*(ptr + 5) << 32) + (*(ptr + 6) << 40) +
-                    (*(ptr + 7) << 48) + (*(ptr + 8) << 56);
+                    (*(ptr + 4) << 24) + ((long)*(ptr + 5) << 32) + ((long)*(ptr + 6) << 40) +
+                    ((long)*(ptr + 7) << 48) + ((long)*(ptr + 8) << 56);
             offset = 8;
             break;
         default:
