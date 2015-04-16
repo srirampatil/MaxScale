@@ -36,63 +36,11 @@
 #include <query_classifier.h>
 #include <strings.h>
 #include <modutil.h>
+#include <common/routeresolution.h>
 
 /** This includes the log manager thread local variables */
 LOG_MANAGER_TLS
 
-/**
- * Hash a query based on the tables it targets.
- * @param query Query to hash
- * @param nodes Number of valid nodes
- * @return number of the node the query is assigned to
- */
-int hash_query_by_table(GWBUF* query, int nodes)
-{
-    int i,hash,val,tsize = 0;
-    char** tables;
-
-    if(!query_is_parsed(query))
-    {
-        parse_query(query);
-    }
-
-    tables = skygw_get_table_names(query,&tsize,true);
-
-    if(tsize < 1)
-    {
-	return 0;
-    }
-    qsort(tables,tsize, sizeof(char*),(int(*)(const void*, const void*))strcasecmp);
-    hash = simple_str_hash(tables[0]);
-    hash = hash != 0 ? abs(hash % nodes) : 0;
-
-    /** This is only for trace logging, for now.
-     * Consider concatenating all db.table strings into a single string */
-
-    if (tsize > 1 &&
-	LOG_IS_ENABLED(LOGFILE_TRACE))
-    {
-	for(i = 0;i<tsize;i++)
-	{
-	    val = simple_str_hash(tables[i]);
-	    val = val != 0 ? abs(val % nodes) : 0;
-	    if(val != hash)
-	    {
-		char *str = modutil_get_SQL(query);
-		skygw_log_write(LOGFILE_TRACE,
-			 "Warning, executing statement with cross-node tables: %s",
-			 str);
-		free(str);
-	    }
-	}
-    }
-
-    for(i = 0;i<tsize;i++)
-	free(tables[i]);
-    free(tables);
-
-    return hash;
-}
 
 /**
  * Route a query to each node in the slist. This function assumes that the data

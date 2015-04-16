@@ -1,4 +1,4 @@
-set(TMPTABLE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/common/tmptable.c" CACHE INTERNAL "Path to temporary table sources")
+set(ROUTING_COMMON "${CMAKE_CURRENT_SOURCE_DIR}/common" CACHE INTERNAL "Path to temporary table sources")
 
 if(BUILD_TESTS)
   add_subdirectory(test)

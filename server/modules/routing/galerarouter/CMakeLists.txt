@@ -1,5 +1,5 @@
 if(BUILD_TOOLS)
-  add_executable(tablehash glr_routing.c)
+  add_executable(tablehash glr_routing.c ${ROUTING_COMMON}/routeresolution.c)
   target_compile_definitions(tablehash PRIVATE "BUILD_TOOLS")
   target_link_libraries(tablehash  ${EMBEDDED_LIB} log_manager utils query_classifier fullcore)
   install(TARGETS tablehash DESTINATION tools)

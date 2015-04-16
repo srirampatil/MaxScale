@@ -34,7 +34,7 @@
 #include <sescmd.h>
 #include <query_classifier.h>
 #include <tmptable.h>
-
+#include <common/routeresolution.h>
 #define BREF_IS_NOT_USED(s)         ((s)->bref_state & ~BREF_IN_USE)
 #define BREF_IS_IN_USE(s)           ((s)->bref_state & BREF_IN_USE)
 #define BREF_IS_WAITING_RESULT(s)   ((s)->bref_num_result_wait > 0)
@@ -50,15 +50,6 @@ typedef enum backend_type_t {
 } backend_type_t;
 
 struct router_instance;
-
-typedef enum {
-	TARGET_UNDEFINED    = 0x00,
-        TARGET_MASTER       = 0x01,
-        TARGET_SLAVE        = 0x02,
-        TARGET_NAMED_SERVER = 0x04,
-        TARGET_ALL          = 0x08,
-        TARGET_RLAG_MAX     = 0x10
-} route_target_t;
 
 #define TARGET_IS_MASTER(t)       (t & TARGET_MASTER)
 #define TARGET_IS_SLAVE(t)        (t & TARGET_SLAVE)

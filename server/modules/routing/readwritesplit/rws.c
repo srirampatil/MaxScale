@@ -101,11 +101,7 @@ int  rses_get_max_replication_lag(ROUTER_CLIENT_SES* rses);
 backend_ref_t* get_bref_from_dcb(ROUTER_CLIENT_SES* rses, DCB* dcb);
 DCB* rses_get_client_dcb(ROUTER_CLIENT_SES* rses);
 
-route_target_t get_route_target (
-	skygw_query_type_t qtype,
-	bool               trx_active,
-	target_t           use_sql_variables_in,
-	HINT*              hint);
+
 
 backend_ref_t* check_candidate_bref(
 	backend_ref_t* candidate_bref,
