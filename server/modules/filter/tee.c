@@ -79,6 +79,18 @@
 #define PARENT 0
 #define CHILD 1
 
+typedef enum {
+BRANCH_WAITING_REPLY,
+BRANCH_WAITING_COLDEF,
+BRANCH_WAITING_EOF,
+BRANCH_DONE
+}tee_branch_state_t;
+
+#define STRBRANCHSTATE(s) s == BRANCH_WAITING_REPLY ? "BRANCH_WAITING_REPLY":\
+s == BRANCH_WAITING_COLDEF ? "BRANCH_WAITING_COLDEF":\
+s == BRANCH_WAITING_EOF ? "BRANCH_WAITING_EOF":\
+s == BRANCH_DONE ? "BRANCH_DONE":"UNKNOWN"
+
 #ifdef SS_DEBUG
 static int debug_seq = 0;
 #endif
@@ -159,30 +171,24 @@ typedef struct {
  */
 typedef struct {
 	DOWNSTREAM	down;		/* The downstream filter */
-    UPSTREAM    up;         /* The upstream filter */
-    
-    FILTER_DEF* dummy_filterdef;
+	UPSTREAM    up;         /* The upstream filter */
+	FILTER_DEF* dummy_filterdef;
 	int		active;		/* filter is active? */
-        bool            use_ok;
-	int		client_multistatement;
-        bool            multipacket[2];
-        unsigned char   command;
-        bool            waiting[2];        /* if the client is waiting for a reply */
-        int             eof[2];
-        int             replies[2];        /* Number of queries received */
-	int             reply_packets[2];  /* Number of OK, ERR, LOCAL_INFILE_REQUEST or RESULT_SET packets received */
+        bool            use_ok;		/*< use OK packets instead of EOF packets in result sets */
+	int		client_multistatement; /*< if client multistatements are enabled */
+        unsigned char   command; /*< the packet type of the last query */
 	DCB		*branch_dcb;	/* Client DCB for "branch" service */
 	SESSION		*branch_session;/* The branch service session */
-	TEE_INSTANCE    *instance;
+	TEE_INSTANCE    *instance; /*< parent instance */
 	int		n_duped;	/* Number of duplicated queries */
 	int		n_rejected;	/* Number of rejected queries */
 	int		residual;	/* Any outstanding SQL text */
 	GWBUF*          tee_replybuf;	/* Buffer for reply */
-        GWBUF*          tee_partials[2];
-	GWBUF*		queue;
+        GWBUF*          tee_partials[2]; /*< partial replies to queries */
+	GWBUF*		queue; /*< queued queries */
         SPINLOCK        tee_lock;
 	DCB*		client_dcb;
-
+	tee_branch_state_t branch_state[2]; /*< state of both the parent and the child branch */
 #ifdef SS_DEBUG
 	long		d_id;
 #endif
@@ -205,7 +211,6 @@ static orphan_session_t* allOrphans = NULL;
 static SPINLOCK orphanLock;
 static int packet_is_required(GWBUF *queue);
 static int detect_loops(TEE_INSTANCE *instance, HASHTABLE* ht, SERVICE* session);
-int internal_route(DCB* dcb);
 GWBUF* clone_query(TEE_INSTANCE* my_instance, TEE_SESSION* my_session, GWBUF* buffer);
 int route_single_query(TEE_INSTANCE* my_instance,
 		       TEE_SESSION* my_session,
@@ -658,9 +663,9 @@ skygw_log_write(LOGFILE_TRACE,"Tee close: %d", atomic_add(&debug_seq,1));
 		 * session.
 		 */
 
-		if(my_session->waiting[PARENT])
+		if(my_session->branch_state[PARENT] != BRANCH_DONE)
 		{
-		    if(my_session->command != 0x01 &&
+		    if(my_session->command != MYSQL_COM_QUIT &&
 		     my_session->client_dcb &&
 		     my_session->client_dcb->state == DCB_STATE_POLLING)
 		    {
@@ -801,7 +806,9 @@ routeQuery(FILTER *instance, void *session, GWBUF *queue)
 #ifdef SS_DEBUG
     skygw_log_write(LOGFILE_TRACE,"Tee routeQuery: %d : %s",
 		    atomic_add(&debug_seq,1),
-		    ((char*)queue->start + 5));
+		    modutil_is_SQL(queue)?
+		    ((char*)queue->start + 5):
+			STRPACKETTYPE((unsigned char*)queue->start + 4));
 #endif
 
 
@@ -845,36 +852,6 @@ routeQuery(FILTER *instance, void *session, GWBUF *queue)
     spinlock_release(&my_session->tee_lock);
 
     return rval;
-}
-
-int count_replies(GWBUF* buffer)
-{
-    unsigned char* ptr = (unsigned char*)buffer->start;
-    unsigned char* end = (unsigned char*) buffer->end;
-    int pktlen, eof = 0;
-    int replies = 0;
-    while(ptr < end)
-    {
-	pktlen = MYSQL_GET_PACKET_LEN(ptr) + 4;
-	if(PTR_IS_OK(ptr) || PTR_IS_ERR(ptr) || PTR_IS_LOCAL_INFILE(ptr))
-	{
-	    replies++;
-	    ptr += pktlen;
-	}
-	else
-	{
-	    while(ptr < end  && eof < 2)
-	    {
-		pktlen = MYSQL_GET_PACKET_LEN(ptr) + 4;
-		if(PTR_IS_EOF(ptr) || PTR_IS_ERR(ptr)) eof++;
-		ptr += pktlen;
-	    }
-	    if(eof == 2) replies++;
-	    eof = 0;
-	}
-    }
-
-    return replies;
 }
 
 int lenenc_length(uint8_t* ptr)
@@ -927,209 +904,150 @@ uint16_t get_response_flags(uint8_t* datastart, bool ok_packet)
 static int
 clientReply (FILTER* instance, void *session, GWBUF *reply)
 {
-    int rc, branch, eof;
+    int rval = 1;
     TEE_SESSION *my_session = (TEE_SESSION *) session;
-    bool route = false,mpkt;
-    GWBUF *complete = NULL;
-    unsigned char *ptr;
+    TEE_INSTANCE *my_instance = my_session->instance;
+    int branch = instance == NULL ? CHILD : PARENT;
+    tee_branch_state_t state = my_session->branch_state[branch];
+    GWBUF* buffer;
+    unsigned char* ptr;
     uint16_t flags = 0;
-    int min_eof = my_session->command != 0x04 ? 2 : 1;
-    int more_results = 0;
-#ifdef SS_DEBUG
-    ptr = (unsigned char*) reply->start;
-    skygw_log_write(LOGFILE_TRACE,"Tee clientReply [%s] [%s] [%s]: %d",
-		    instance ? "parent":"child",
-		    my_session->active ? "open" : "closed",
-		    PTR_IS_ERR(ptr) ? "ERR" : PTR_IS_OK(ptr) ? "OK" : "RSET",
-		    atomic_add(&debug_seq,1));
-#endif
+    int more = false;
 
     spinlock_acquire(&my_session->tee_lock);
 
-    if(!my_session->active)
+    if(my_session->active)
     {
-	skygw_log_write(LOGFILE_TRACE,"Tee: Failed to return reply, session is closed");
-	gwbuf_free(reply);
-	rc = 0;
-	if(my_session->waiting[PARENT])
+	my_session->tee_partials[branch] = gwbuf_append(
+		my_session->tee_partials[branch],reply);
+	buffer = modutil_get_complete_packets(&my_session->tee_partials[branch]);
+	if(buffer != NULL)
 	{
-	    GWBUF* errbuf = modutil_create_mysql_err_msg(1,0,1,"0000","Session closed.");
-	    my_session->waiting[PARENT] = false;
-	    my_session->up.clientReply (my_session->up.instance,
-				     my_session->up.session,
-				     errbuf);
-	}
-	goto retblock;
-    }
-
-    branch = instance == NULL ? CHILD : PARENT;
-
-    my_session->tee_partials[branch] = gwbuf_append(my_session->tee_partials[branch], reply);
-    my_session->tee_partials[branch] = gwbuf_make_contiguous(my_session->tee_partials[branch]);
-    complete = modutil_get_complete_packets(&my_session->tee_partials[branch]);
-
-    if(complete == NULL)
-    {
-	/** Incomplete packet */
-	skygw_log_write(LOGFILE_DEBUG,"tee.c: Incomplete packet, "
-		"waiting for a complete packet before forwarding.");
-	rc = 1;
-	goto retblock;
-    }
-    
-    complete = gwbuf_make_contiguous(complete);
-
-    if(my_session->tee_partials[branch] && 
-       GWBUF_EMPTY(my_session->tee_partials[branch]))
-    {
-        gwbuf_free(my_session->tee_partials[branch]);
-        my_session->tee_partials[branch] = NULL;
-    }
-
-    ptr = (unsigned char*) complete->start;
-    
-    if(my_session->replies[branch] == 0)
-    {
-	skygw_log_write(LOGFILE_TRACE,"Tee: First reply to a query for [%s].",branch == PARENT ? "PARENT":"CHILD");
-	/* Reply is in a single packet if it is an OK, ERR or LOCAL_INFILE packet.
-	 * Otherwise the reply is a result set and the amount of packets is unknown.
-	 */
-	if(PTR_IS_ERR(ptr) || PTR_IS_LOCAL_INFILE(ptr) ||
-	 PTR_IS_OK(ptr) || !my_session->multipacket[branch] )
-	{
-	    my_session->waiting[branch] = false;
-	    my_session->multipacket[branch] = false;
-	    if(PTR_IS_OK(ptr))
+	    switch(state)
 	    {
-		flags = get_response_flags(ptr,true);
-		more_results = (flags & 0x08) && my_session->client_multistatement;
-		if(more_results)
+	    case BRANCH_WAITING_REPLY:
+		/** First response to a query */
+		ptr = GWBUF_DATA(buffer);
+		if(PTR_IS_ERR(ptr) || PTR_IS_LOCAL_INFILE(ptr))
 		{
-		    skygw_log_write(LOGFILE_TRACE,
-			     "Tee: [%s] waiting for more results.",branch == PARENT ? "PARENT":"CHILD");
+		    my_session->branch_state[branch] = BRANCH_DONE;
 		}
+		else if(PTR_IS_OK(ptr))
+		{
+		    flags = get_response_flags(ptr,true);
+		    if((flags & 0x08) && my_session->client_multistatement)
+			my_session->branch_state[branch] = BRANCH_WAITING_REPLY;
+		    else
+			my_session->branch_state[branch] = BRANCH_DONE;
+		}
+		else if(PTR_IS_RESULTSET(ptr))
+		{
+		    switch(modutil_count_signal_packets(
+			    buffer,my_session->use_ok,0,&more))
+		    {
+		    case 0:
+			my_session->branch_state[branch] = BRANCH_WAITING_COLDEF;
+			break;
+		    case 1:
+			my_session->branch_state[branch] = BRANCH_WAITING_EOF;
+			break;
+		    case 2:
+			if(more)
+			    my_session->branch_state[branch] = BRANCH_WAITING_REPLY;
+			else
+			    my_session->branch_state[branch] = BRANCH_DONE;
+			break;
+		    default:
+			break;
+		    }
+		}
+		break;
+
+	    case BRANCH_WAITING_COLDEF:
+		switch(modutil_count_signal_packets(
+		 buffer,my_session->use_ok,0,&more))
+		{
+		case 1:
+		    my_session->branch_state[branch] = BRANCH_WAITING_EOF;
+		    break;
+		case 2:
+		    if(more)
+			my_session->branch_state[branch] = BRANCH_WAITING_REPLY;
+		    else
+			my_session->branch_state[branch] = BRANCH_DONE;
+		    break;
+		}
+		break;
+
+	    case BRANCH_WAITING_EOF:
+		switch(modutil_count_signal_packets(
+		 buffer,my_session->use_ok,1,&more))
+		{
+		case 1:
+		    my_session->branch_state[branch] = BRANCH_WAITING_EOF;
+		    break;
+		case 2:
+		    if(more)
+			my_session->branch_state[branch] = BRANCH_WAITING_REPLY;
+		    else
+			my_session->branch_state[branch] = BRANCH_DONE;
+		    break;
+		}
+		break;
+
+	    default:
+		/** This is an abnormal situation, discard response since the
+		 * client isn't waiting for one.*/
+
+		while(buffer && (buffer = gwbuf_consume(buffer,gwbuf_length(buffer))));
+		buffer = my_session->tee_partials[branch];
+		while(buffer && (buffer = gwbuf_consume(buffer,gwbuf_length(buffer))));
+		LOGIF(LT,skygw_log_write_flush(LT,"Tee: Invalid state: Branch: [%s] State: [%s]",
+					branch == PARENT?"PARENT":"CHILD",
+					STRBRANCHSTATE(state)));
+		break;
 	    }
 	}
-#ifdef SS_DEBUG
-	else
-	{
-	    skygw_log_write_flush(LOGFILE_DEBUG,"tee.c: [%d] Waiting for a result set from %s session.",
-			     my_session->d_id,
-			     branch == PARENT?"parent":"child");
-	}
-#endif
-    }
 
-    if(my_session->waiting[branch])
-    {
-	eof = modutil_count_signal_packets(complete,my_session->use_ok,my_session->eof[branch] > 0,&more_results);
-	more_results &= my_session->client_multistatement;
-	my_session->eof[branch] += eof;
-
-	if(my_session->eof[branch] >= min_eof)
+	if(buffer)
 	{
-#ifdef SS_DEBUG
-	    skygw_log_write_flush(LOGFILE_DEBUG,"tee.c [%d] %s received last EOF packet",
-			     my_session->d_id,
-			     branch == PARENT?"parent":"child");
-#endif
-	    my_session->waiting[branch] = more_results;
-	    if(more_results)
+	    if(branch == PARENT)
 	    {
-		my_session->eof[branch] = 0;
+		my_session->tee_replybuf = buffer;
 	    }
-	}
-    }
-
-    if(branch == PARENT)
-    {
-	my_session->tee_replybuf = gwbuf_append(my_session->tee_replybuf,complete);
-    }
-    else
-    {
-	gwbuf_free(complete);
-    }
-
-    my_session->replies[branch]++;
-    rc = 1;
-    mpkt = my_session->multipacket[PARENT] || my_session->multipacket[CHILD];
-
-    if(my_session->tee_replybuf != NULL)
-    { 
-
-	if(my_session->branch_session == NULL)
-	{
-	    rc = 0;
-	    gwbuf_free(my_session->tee_replybuf);
-	    my_session->tee_replybuf = NULL;
-	    skygw_log_write_flush(LOGFILE_ERROR,"Error : Tee child session was closed.");
-	}
-
-	if(mpkt)
-	{
-
-	    if(my_session->waiting[PARENT])
+	    else
 	    {
-		route = true;
-
+		while(buffer && (buffer = gwbuf_consume(buffer,gwbuf_length(buffer))));
 	    }
-	    else if(my_session->eof[PARENT] >= min_eof &&
-	     my_session->eof[CHILD] >= min_eof)
+
+	    if(my_session->tee_replybuf &&
+	    (my_session->branch_state[PARENT] != BRANCH_DONE ||
+	     (my_session->branch_state[PARENT] == BRANCH_DONE &&
+	     my_session->branch_state[CHILD] == BRANCH_DONE)))
 	    {
-		route = true;
-#ifdef SS_DEBUG
-		skygw_log_write_flush(LOGFILE_DEBUG,"tee.c:[%d] Routing final packet of response set.",my_session->d_id);
+		rval = my_session->up.clientReply (my_session->up.instance,
+						 my_session->up.session,
+						 my_session->tee_replybuf);
+		my_session->tee_replybuf = NULL;
+#if 0
+		LOGIF(LT,skygw_log_write_flush(LT,"Tee: Parent: [%s] Child: [%s]",
+				 STRBRANCHSTATE(my_session->branch_state[PARENT]),
+				 STRBRANCHSTATE(my_session->branch_state[CHILD])));
 #endif
 	    }
 	}
-	else if(!my_session->waiting[PARENT] &&
-	 !my_session->waiting[CHILD])
-	{
-#ifdef SS_DEBUG
-	    skygw_log_write_flush(LOGFILE_DEBUG,"tee.c:[%d] Routing single packet response.",my_session->d_id);
-#endif
-	    route = true;
-	}
-    }
 
-    if(route)
-    {
-#ifdef SS_DEBUG
-	skygw_log_write_flush(LOGFILE_DEBUG, "tee.c:[%d] Routing buffer '%p' parent(waiting [%s] replies [%d] eof[%d])"
-		" child(waiting [%s] replies[%d] eof [%d])",
-			 my_session->d_id,
-			 my_session->tee_replybuf,
-			 my_session->waiting[PARENT] ? "true":"false",
-			 my_session->replies[PARENT],
-			 my_session->eof[PARENT],
-			 my_session->waiting[CHILD]?"true":"false",
-			 my_session->replies[CHILD],
-			 my_session->eof[CHILD]);
-#endif
-	
-	rc = my_session->up.clientReply (my_session->up.instance,
-					 my_session->up.session,
-					 my_session->tee_replybuf);
-	my_session->tee_replybuf = NULL;
-    }
 
-    if(my_session->queue &&
-       !my_session->waiting[PARENT] &&
-	 !my_session->waiting[CHILD])
-    {
-	GWBUF* buffer = modutil_get_next_MySQL_packet(&my_session->queue);
-	GWBUF* clone = clone_query(my_session->instance,my_session,buffer);
-	reset_session_state(my_session,buffer);
-	route_single_query(my_session->instance,my_session,buffer,clone);
-	LOGIF(LT,(skygw_log_write(LT,"tee: routing queued query")));
+	LOGIF(LT,if(state != my_session->branch_state[branch])
+		    skygw_log_write_flush(LT,"Tee: Branch: [%s] State: [%s] -> [%s]",
+				 branch == PARENT?"PARENT":"CHILD",
+				 STRBRANCHSTATE(state),
+				 STRBRANCHSTATE(my_session->branch_state[branch])));
 
     }
-
-    retblock:
-
     spinlock_release(&my_session->tee_lock);
-    
-    return rc;
+
+    return rval;
 }
 
 /**
@@ -1169,6 +1087,10 @@ TEE_SESSION	*my_session = (TEE_SESSION *)fsession;
 			my_session->n_duped);
 		dcb_printf(dcb, "\t\tNo. of statements rejected:	%d.\n",
 			my_session->n_rejected);
+		dcb_printf(dcb,"Parent branch state: %s\n",
+			 STRBRANCHSTATE(my_session->branch_state[PARENT]));
+		dcb_printf(dcb,"Child branch state: %s\n",
+			 STRBRANCHSTATE(my_session->branch_state[CHILD]));
 	}
 }
 
@@ -1196,6 +1118,10 @@ int		i;
 
 /**
  * Detects possible loops in the query cloning chain.
+ * @param instance Tee instance
+ * @param ht Hashtable containing service names with tee filters
+ * @param service Currennt service
+ * @return 1 if there is a loop, 0 if no loops are detected and -1 on error
  */
 int detect_loops(TEE_INSTANCE *instance,HASHTABLE* ht, SERVICE* service)
 {
@@ -1243,22 +1169,12 @@ int detect_loops(TEE_INSTANCE *instance,HASHTABLE* ht, SERVICE* service)
     return false;
 }
 
-int internal_route(DCB* dcb)
-{
-    GWBUF* buffer = dcb->dcb_readqueue;
-
-    /** This was set in the newSession function*/
-    TEE_SESSION* session = dcb->data;
-
-    return routeQuery((FILTER*)session->instance,session,buffer);
-}
-
 /**
- *
- * @param my_instance
- * @param my_session
- * @param buffer
- * @return
+ * Clone a query for the branch session.
+ * @param my_instance Tee instance
+ * @param my_session Tee session
+ * @param buffer Buffer to clone
+ * @return Pointer to cloned buffer or NULL if the buffer should not be cloned
  */
 GWBUF* clone_query(TEE_INSTANCE* my_instance, TEE_SESSION* my_session, GWBUF* buffer)
 {
@@ -1323,9 +1239,9 @@ int route_single_query(TEE_INSTANCE* my_instance, TEE_SESSION* my_session, GWBUF
        my_session->branch_session->state != SESSION_STATE_ROUTER_READY)
     {
 	rval = 0;
-	my_session->active = 0;
 	return rval;
     }
+
     rval = my_session->down.routeQuery(my_session->down.instance,
 				       my_session->down.session,
 				       buffer);
@@ -1340,11 +1256,9 @@ int route_single_query(TEE_INSTANCE* my_instance, TEE_SESSION* my_session, GWBUF
 	else
 	{
 	    /** Close tee session */
-	    my_session->active = 0;
 	    rval = 0;
-	    LOGIF(LT, (skygw_log_write(
-		    LOGFILE_TRACE,
-				     "Closed tee filter session: Child session in invalid state.")));
+	    LOGIF(LT, (skygw_log_write(LOGFILE_TRACE,
+		    "Closed tee filter session: Child session in invalid state.")));
 	    gwbuf_free(clone);
 	}
     }
@@ -1355,7 +1269,6 @@ int route_single_query(TEE_INSTANCE* my_instance, TEE_SESSION* my_session, GWBUF
 	    LOGIF(LT, (skygw_log_write(
 		    LOGFILE_TRACE,
 				     "Closed tee filter session: Child session is NULL.")));
-	    my_session->active = 0;
 	    rval = 0;
 	}
 	my_session->n_rejected++;
@@ -1382,23 +1295,14 @@ int reset_session_state(TEE_SESSION* my_session, GWBUF* buffer)
 	    my_session->client_multistatement = *((unsigned char*) buffer->start + 5);
 	    LOGIF(LT,(skygw_log_write(LT,"Tee: client %s multistatements",
 			my_session->client_multistatement ? "enabled":"disabled")));
-        case 0x03:
-        case 0x16:
-        case 0x17:
-        case 0x04:
-        case 0x0a:
-            memset(my_session->multipacket,(char)true,2*sizeof(bool));
             break;
         default:
-            memset(my_session->multipacket,(char)false,2*sizeof(bool));
             break;
         }
 
-        memset(my_session->replies,0,2*sizeof(int));
-	memset(my_session->reply_packets,0,2*sizeof(int));
-        memset(my_session->eof,0,2*sizeof(int));
-        memset(my_session->waiting,1,2*sizeof(bool));
         my_session->command = command;
-
+	my_session->branch_state[PARENT] = BRANCH_WAITING_REPLY;
+	my_session->branch_state[CHILD] = BRANCH_WAITING_REPLY;
+	
 	return 1;
 }

@@ -644,30 +644,9 @@ modutil_count_signal_packets(GWBUF *reply, int use_ok,  int n_found, int* more)
         ptr += pktlen;
     }
 
-
-    /*
-     * If there were new EOF/ERR packets found, make sure that they are the last
-     * packet in the buffer.
-     */
-    if((eof || err) && n_found)
-    {
-        if(err)
-        {
-            ptr -= errlen;
-            if(!PTR_IS_ERR(ptr))
-                err = 0;
-        }
-        else
-        {
-            ptr -= eoflen;
-            if(!PTR_IS_EOF(ptr))
-                eof = 0;
-        }
-    }
-
     *more = moreresults;
 
-    return(eof + err);
+    return(eof + err) + n_found;
 }
 
 /**
