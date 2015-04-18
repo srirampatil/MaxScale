@@ -19,8 +19,8 @@
 #include <router.h>
 #include <galerarouter.h>
 #include <query_classifier.h>
-
-#include "common/routeresolution.h"
+#include <common/routeresolution.h>
+#include <modutil.h>
 
 /** This includes the log manager thread local variables */
 LOG_MANAGER_TLS
@@ -73,6 +73,8 @@ static  void handleError(ROUTER* instance,
                          bool* succp);
 static uint8_t getCapabilities (ROUTER* inst,
                                 void* router_session);
+int handle_query(GALERA_INSTANCE* inst,GALERA_SESSION* ses,GWBUF *query);
+int retry_commit(GALERA_SESSION* ses,DCB* dcb);
 
 static ROUTER_OBJECT MyObject = {
     createInstance,
@@ -86,9 +88,52 @@ static ROUTER_OBJECT MyObject = {
     getCapabilities
 };
 
+
+/**
+ * Implementation of the mandatory version entry point
+ *
+ * @return version string of the module
+ */
+char *
+version()
+{
+	return version_str;
+}
+
+/**
+ * The module initialization routine, called when the module
+ * is first loaded.
+ */
+void
+ModuleInit()
+{
+}
+
+/**
+ * The module entry point routine. It is this routine that
+ * must populate the structure that is referred to as the
+ * "module object", this is a structure with the set of
+ * external entry points for this module.
+ *
+ * @return The module object
+ */
+ROUTER_OBJECT* GetModuleObject()
+{
+        return &MyObject;
+}
+
+/**
+ * Create a new router instance.
+ * @param service Service owner of the instance
+ * @param options Router options
+ * @return Pointer to router instance or NULL if an error occurred.
+ */
 static ROUTER* createInstance(SERVICE *service, char **options)
 {
     GALERA_INSTANCE* inst;
+    char* param;
+    char* val;
+    char* saveptr;
 
     if((inst = malloc(sizeof(GALERA_INSTANCE))))
     {
@@ -101,23 +146,47 @@ static ROUTER* createInstance(SERVICE *service, char **options)
 	    int i;
 	    for(i = 0;options[i];i++)
 	    {
-		if(strcmp(options[i],"safe_reads") == 0)
+		param = strtok_r(options[i]," =",&saveptr);
+		val = strtok_r(NULL," =",&saveptr);
+		if(strcmp(param,"safe_reads") == 0 && val)
 		{
-		    inst->safe_reads = true;
+		    if(config_truth_value(val))
+			inst->safe_reads = true;
+		    else
+			inst->safe_reads = true;
+		}
+		else if(strcmp(param,"max_retries") == 0 && val)
+		{
+		    inst->max_retries = atoi(val);
+		}
+		else
+		{
+		    skygw_log_write(LE,"Error: Unexpected parameter %s%s%s.",
+			     param,val?"=":"",val?val:"");
+		    free(inst);
+		    return NULL;
 		}
 	    }
 	}
     }
 
-    return inst;
+    return (ROUTER*)inst;
 }
 
+/**
+ * Start a new session for the Galera router. This function allocates memory for
+ * the router session and connects to all nodes.
+ * @param instance Router instance
+ * @param session The client session
+ * @return Pointer to the new session or NULL if an error occurred.
+ */
 static void* newSession(ROUTER *instance, SESSION *session)
 {
     GALERA_INSTANCE* inst = (GALERA_INSTANCE*)instance;
     GALERA_SESSION* ses = NULL;
     SERVER_REF* sref;
     DCB* dcb;
+
     if((ses = (GALERA_SESSION*)malloc(sizeof(GALERA_SESSION))) != NULL)
     {
 	ses->autocommit = true;
@@ -126,6 +195,8 @@ static void* newSession(ROUTER *instance, SESSION *session)
 	ses->queue = NULL;
 	ses->closed = false;
 	ses->session = session;
+	ses->conflict.n_retries = 0;
+	ses->conflict.max_retries = inst->max_retries;
 	spinlock_init(&ses->lock);
 	
 	if((ses->nodes = slist_init()) == NULL)
@@ -195,91 +266,23 @@ static void freeSession(ROUTER *instance, void *session)
     free(ses);
 }
 
+/**
+ * Route a query to a backend server or to all backend servers if it is a query
+ * that modifies the session state.
+ * @param instance Router instance
+ * @param session Router session
+ * @param query Query to route
+ * @return 1 on success, 0 on failure.
+ */
 static int routeQuery(ROUTER *instance, void *session, GWBUF *query)
 {
-    int i,hash,rval = 0;
+    int rval = 0;
     GALERA_SESSION* ses = (GALERA_SESSION*)session;
     GALERA_INSTANCE* inst = (GALERA_INSTANCE*)instance;
-    skygw_query_type_t qtype = QUERY_TYPE_UNKNOWN;
-    DCB* dcb;
-    mysql_server_cmd_t command;
-    route_target_t target;
+
     if(spinlock_acquire_with_test(&ses->lock,&ses->closed,false))
     {
-	command = MYSQL_GET_COMMAND(query->start);
-	qtype = resolve_query_type(query,command);
-	target = get_route_target(qtype,ses->trx_open,false,NULL);
-
-	/** Treat reads as writes, guarantees consistent reads*/
-
-	if(inst->safe_reads)
-	    qtype |= QUERY_TYPE_WRITE;
-
-	if(QUERY_IS_TYPE(qtype,QUERY_TYPE_BEGIN_TRX))
-	{
-	    /** BEGIN statement of a new transaction,
-	     * store it and wait for the next query. */
-
-	    if(ses->queue)
-		gwbuf_free(ses->queue);
-
-	    ses->trx_open = true;
-	    ses->queue = query;
-	    rval = 1;
-	}
-	else if(skygw_is_session_command(query))
-	{
-
-	    /** Session command handling */
-
-	    sescmdlist_add_command(ses->sescmd,query);
-	    route_sescmd(ses->nodes,query);
-	    gwbuf_free(query);
-
-	    if(MYSQL_IS_COM_QUIT(query->start))
-		rval = 0;
-	}
-	else if(ses->trx_open)
-	{
-	    /** Open transaction in progress */
-
-	    if(ses->active_node == NULL)
-	    {
-		/** No chosen node yet, hash the query and send it to the server. */
-
-		hash = hash_query_by_table(query,slist_size(ses->nodes));
-		dcb = get_dcb_from_hash(ses->nodes,hash);
-		ses->active_node = dcb;
-		rval = dcb->func.write(dcb,ses->queue);
-		ses->queue = query;
-	    }
-	    else
-	    {
-		/** We have an active node, route query there. */
-
-		if(SERVER_IS_JOINED(ses->active_node->server))
-		{
-		    dcb = ses->active_node;
-		    rval = dcb->func.write(dcb,query);
-		}
-
-		if(QUERY_IS_TYPE(qtype, QUERY_TYPE_COMMIT) ||
-		 QUERY_IS_TYPE(qtype, QUERY_TYPE_ROLLBACK))
-		{
-		    ses->trx_open = false;
-		    ses->active_node = NULL;
-		}
-	    }
-	}
-	else if (target == TARGET_MASTER || target == TARGET_UNDEFINED)
-	{
-	    hash = hash_query_by_table(query,slist_size(ses->nodes));
-	    dcb = get_dcb_from_hash(ses->nodes,hash);
-	    rval = dcb->func.write(dcb,ses->queue);
-	}
-   
-    // If the query is a read and router load balances reads, send to lowest connection count node and return 1
-
+	rval = handle_query(inst,ses,query);
 	spinlock_release(&ses->lock);
     }
 
@@ -290,19 +293,49 @@ static void diagnostic(ROUTER *instance, DCB *dcb)
 {
     // Print information about current number of connections and writes sent to each node
     // Print routing mode, whether reads are load balanced or not
+    dcb_printf(dcb,"Galera router\n");
 }
 
-static void clientReply(
-                        ROUTER* instance,
+static void clientReply(ROUTER* instance,
                         void* router_session,
                         GWBUF* queue,
                         DCB* backend_dcb)
 {
-    // If a session command was sent, process reply
+    GALERA_SESSION* ses = (GALERA_SESSION*)router_session;
+    GALERA_INSTANCE* inst = (GALERA_INSTANCE*)instance;
+    SCMDCURSOR* cursor;
+    
+    /** If a session command was sent, process reply */
+    if(spinlock_acquire_with_test(&ses->lock,&ses->closed,false))
+    {
+	if(GWBUF_IS_TYPE_SESCMD_RESPONSE(queue))
+	{
+	    cursor = dcb_get_sescmdcursor(backend_dcb);
+	    if(sescmdlist_process_replies(cursor,&queue))
+	    {
+		sescmdlist_execute(cursor);
+	    }
+	}
 
-    // If a queued query was stored, send it to the node
+	/** If a queued query was stored, route it */
+	if(ses->queue)
+	{
+	    GWBUF* tmp = ses->queue;
+	    ses->queue = NULL;
+	    if(handle_query(inst,ses,tmp) == 0)
+	    {
+		LOGIF(LT,(skygw_log_write(LT,"Failed to route queued query.")));
+	    }
+	}
 
-    // Return reply to client if the client is waiting for one
+	/** Return reply to client if the client is waiting for one */
+	if(queue)
+	{
+	    SESSION_ROUTE_REPLY(ses->session,queue);
+	}
+
+	spinlock_release(&ses->lock);
+    }
 }
 
 static void handleError(ROUTER* instance,
@@ -312,7 +345,53 @@ static void handleError(ROUTER* instance,
                         error_action_t action,
                         bool* succp)
 {
-    // Close connection to failed backend
+    GALERA_SESSION* ses = (GALERA_SESSION*)router_session;
+    int rval = 0;
+
+    if(spinlock_acquire_with_test(&ses->lock,&ses->closed,false))
+    {
+	if(action == ERRACT_RESET)
+	{
+	    backend_dcb->dcb_errhandle_called = false;
+	    ses->conflict.n_retries = 0;
+	    return;
+	}
+
+	if(backend_dcb->dcb_errhandle_called)
+	    return;
+
+	backend_dcb->dcb_errhandle_called = true;
+
+	switch(action)
+	{
+	case ERRACT_NEW_CONNECTION:
+	    /** node down, close DCB and reassign nodes NOT DONE YET*/
+	    dcb_close(backend_dcb);
+	    break;
+	case ERRACT_REPLY_CLIENT:
+
+	    if(*((unsigned short*)(GWBUF_DATA(errmsgbuf) + 5)) == MYSQL_ER_LOCK_DEADLOCK &&
+	     ses->conflict.n_retries < ses->conflict.max_retries)
+	    {
+		if((rval = retry_commit(ses,backend_dcb)))
+		{
+		    LOGIF(LT,(skygw_log_write(LT,"Commit retry number %d",ses->conflict.n_retries)));
+		    backend_dcb->dcb_errhandle_called = false;
+		}
+	    }
+
+	    if(rval == 0)
+	    {
+		backend_dcb->func.write(backend_dcb,errmsgbuf);
+	    }
+	    break;
+
+	default:
+	    break;
+	}
+
+	spinlock_release(&ses->lock);
+    }
 }
 
 static uint8_t getCapabilities (

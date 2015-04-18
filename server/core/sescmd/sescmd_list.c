@@ -100,8 +100,9 @@ bool sescmdlist_add_command (SCMDLIST* scmdlist, GWBUF* buf)
        skygw_log_write(LOGFILE_ERROR,"Error : Memory allocation failed at sescmd_add_command.");
        return false;
    }
-   
+
    cmd->buffer = gwbuf_clone(buf);
+   gwbuf_set_type(cmd->buffer,GWBUF_TYPE_SESCMD);
    cmd->packet_type = *((unsigned char*)buf->start + 4);
    cmd->reply_sent = false;
    

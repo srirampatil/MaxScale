@@ -41,6 +41,7 @@
 /** This includes the log manager thread local variables */
 LOG_MANAGER_TLS
 
+DCB* get_dcb_from_hash(slist_cursor_t* cursor, int node);
 
 /**
  * Route a query to each node in the slist. This function assumes that the data
@@ -77,6 +78,102 @@ int route_sescmd(slist_cursor_t* cursor,GWBUF* buffer)
 	}
     }while(slcursor_step_ahead(cursor));
 
+    return rval;
+}
+
+/**
+ * Handle an incoming query.
+ * Resolve the type of the query and route it to the appropriate node. Queries
+ * that modify data are routed to a node based on the output of the hashing
+ * function. Read-only queries can be either load balanced across all nodes or
+ * they can be routed to a node based on the output of the hashing function. This
+ * is controlled by the 'safe_reads' router option.
+ * @param inst Router instance
+ * @param ses Router session
+ * @param query GWBUF with the query to handle
+ * @return 1 on success, 0 on failure. All failures will trigger the closing
+ * of the session.
+ */
+int handle_query(GALERA_INSTANCE* inst,GALERA_SESSION* ses,GWBUF *query)
+{
+    int hash,rval = 0;
+    skygw_query_type_t qtype = QUERY_TYPE_UNKNOWN;
+    DCB* dcb;
+    mysql_server_cmd_t command;
+    route_target_t target;
+    command = MYSQL_GET_COMMAND(((unsigned char*)query->start));
+    qtype = resolve_query_type(query,command);
+    target = get_route_target(qtype,ses->trx_open,false,NULL);
+
+    /** Treat reads as writes, guarantees consistent reads*/
+
+    if(inst->safe_reads)
+	qtype |= QUERY_TYPE_WRITE;
+
+    if(QUERY_IS_TYPE(qtype,QUERY_TYPE_BEGIN_TRX))
+    {
+	/** BEGIN statement of a new transaction,
+	 * store it and wait for the next query. */
+
+	if(ses->queue)
+	    gwbuf_free(ses->queue);
+
+	ses->trx_open = true;
+	ses->queue = query;
+	rval = 1;
+    }
+    else if(skygw_is_session_command(query))
+    {
+
+	/** Session command handling */
+
+	sescmdlist_add_command(ses->sescmd,query);
+	route_sescmd(ses->nodes,query);
+	gwbuf_free(query);
+
+	if(MYSQL_IS_COM_QUIT(((unsigned char*)query->start)))
+	    rval = 0;
+    }
+    else if(ses->trx_open)
+    {
+	/** Open transaction in progress */
+
+	if(ses->active_node == NULL)
+	{
+	    /** No chosen node yet, hash the query and send it to the server. */
+
+	    hash = hash_query_by_table(query,slist_size(ses->nodes));
+	    dcb = get_dcb_from_hash(ses->nodes,hash);
+	    ses->active_node = dcb;
+	    rval = dcb->func.write(dcb,ses->queue);
+	    ses->queue = query;
+	}
+	else
+	{
+	    /** We have an active node, route query there. */
+
+	    if(SERVER_IS_JOINED(ses->active_node->server))
+	    {
+		dcb = ses->active_node;
+		rval = dcb->func.write(dcb,query);
+	    }
+
+	    if(QUERY_IS_TYPE(qtype, QUERY_TYPE_COMMIT) ||
+	     QUERY_IS_TYPE(qtype, QUERY_TYPE_ROLLBACK))
+	    {
+		ses->trx_open = false;
+		ses->active_node = NULL;
+	    }
+	}
+    }
+    else if (target == TARGET_MASTER || target == TARGET_UNDEFINED)
+    {
+	hash = hash_query_by_table(query,slist_size(ses->nodes));
+	dcb = get_dcb_from_hash(ses->nodes,hash);
+	rval = dcb->func.write(dcb,ses->queue);
+    }
+
+    // If the query is a read and router load balances reads, send to lowest connection count node and return 1
     return rval;
 }
 

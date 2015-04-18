@@ -29,3 +29,20 @@
  * 
  * @endverbatim
  */
+
+#include <galerarouter.h>
+
+int retry_commit(GALERA_SESSION* ses,DCB* dcb)
+{
+    int rval;
+    GWBUF* buffer;
+
+    if((buffer = modutil_create_query("COMMIT")) == NULL)
+    {
+	return 0;
+    }
+
+    rval = dcb->func.write(dcb,buffer);
+    atomic_add(&ses->conflict.n_retries,1);
+    return rval;
+}

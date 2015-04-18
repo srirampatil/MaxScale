@@ -32,7 +32,7 @@
 
 #include <galerarouter.h>
 
-slist_cursor_t* refresh_nodes(SESSION* session, SERVER_REF* servers, slist_cursor_t* oldconn)
+slist_cursor_t* refresh_nodes(GALERA_SESSION* session, SERVER_REF* servers, slist_cursor_t* oldconn)
 {
     slist_cursor_t* newconn;
     SERVER_REF* sref;
@@ -54,7 +54,7 @@ slist_cursor_t* refresh_nodes(SESSION* session, SERVER_REF* servers, slist_curso
 			session,
 			sref->server->protocol)))
 	    {
-		slcursor_add_data(ses->nodes,(void*)dcb);
+		slcursor_add_data(session->nodes,(void*)dcb);
 	    }
 	    sref = sref->next;
 	}

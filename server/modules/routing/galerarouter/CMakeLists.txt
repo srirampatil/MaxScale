@@ -1,3 +1,7 @@
+add_library(galerarouter SHARED glr.c glr_routing.c glr_connections.c glr_error.c)
+target_link_libraries(galerarouter log_manager utils query_classifier)
+install(TARGETS galerarouter DESTINATION modules)
+
 if(BUILD_TOOLS)
   add_executable(tablehash glr_routing.c ${ROUTING_COMMON}/routeresolution.c)
   target_compile_definitions(tablehash PRIVATE "BUILD_TOOLS")
