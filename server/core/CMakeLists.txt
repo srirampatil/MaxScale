@@ -2,7 +2,7 @@ if(BUILD_TESTS OR BUILD_TOOLS)
   set(FULLCORE_SRC atomic.c buffer.c spinlock.c secrets.c utils.c
 	gw_utils.c utils.c dcb.c load_utils.c session.c service.c server.c 
 	poll.c config.c users.c hashtable.c dbusers.c thread.c gwbitmask.c 
-	monitor.c adminusers.c secrets.c filter.c modutil.c hint.c
+	monitor.c adminusers.c secrets.c filter.c modutil.c hint.c array.c
 	housekeeper.c memlog.c resultset.c sescmd/sescmd.c sescmd/sescmd_cursor.c
     sescmd/sescmd_list.c)
   add_library(fullcore STATIC ${FULLCORE_SRC})
@@ -14,7 +14,7 @@ endif()
 set(SCMD_SRC "${CMAKE_CURRENT_SOURCE_DIR}/sescmd/sescmd.c ${CMAKE_CURRENT_SOURCE_DIR}/sescmd/sescmd_list.c ${CMAKE_CURRENT_SOURCE_DIR}/sescmd/sescmd_cursor.c"
   CACHE INTERNAL "Path to session command sources")
 
-add_executable(maxscale atomic.c buffer.c spinlock.c gateway.c
+add_executable(maxscale atomic.c buffer.c spinlock.c gateway.c array.c
 	gw_utils.c utils.c dcb.c load_utils.c session.c service.c server.c 
 	poll.c config.c users.c hashtable.c dbusers.c thread.c gwbitmask.c 
 	monitor.c adminusers.c secrets.c filter.c modutil.c hint.c resultset.c
