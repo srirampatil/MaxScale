@@ -32,39 +32,63 @@
 
 #include <galerarouter.h>
 
-slist_cursor_t* refresh_nodes(GALERA_SESSION* session, SERVER_REF* servers, slist_cursor_t* oldconn)
+/**
+ *
+ * @param session
+ * @param servers
+ * @param oldconn
+ * @return
+ */
+int refresh_nodes(GALERA_SESSION* session, SERVER_REF* servers)
 {
-    slist_cursor_t* newconn;
+    ARRAY* array;
     SERVER_REF* sref;
     DCB* dcb;
+    unsigned int i,j;
+    int oknodes = 0;
 
-    if((newconn = slist_init()) == NULL)
+    sref = servers;
+    array = session->nodes;
+    j = array_size(array);
+
+    while(sref)
+    {
+	if(SERVER_IS_JOINED(sref->server))
 	{
-	    skygw_log_write_flush(LOGFILE_ERROR,"Error: Slist initialization failed.");
-	    return NULL;
-	}
+	    bool no_conn = true;
 
-	sref = servers;
 
-	while(sref)
-	{
-	    if(SERVER_IS_JOINED(sref->server)
-		&& (dcb = dcb_connect(
-			sref->server,
-			session,
-			sref->server->protocol)))
+	    for(i = 0;i<j;i++)
 	    {
-		slcursor_add_data(session->nodes,(void*)dcb);
+		dcb = array_fetch(array,i);
+		if(dcb->server == sref->server)
+		{
+		    no_conn = false;
+		    oknodes++;
+		    break;
+		}
 	    }
-	    sref = sref->next;
-	}
 
-	if(slist_size(newconn) == 0)
-	{
-	    slist_done(newconn);
-	    skygw_log_write(LOGFILE_ERROR,"Session creation failed: All attempts to connect to servers failed.");
-	    return NULL;
+	    if(no_conn)
+	    {
+		dcb = dcb_connect(sref->server,
+				 session->session,
+				 sref->server->protocol);
+		if(dcb)
+		{
+		    array_push(array,(void*)dcb);
+		    oknodes++;
+		}
+	    }
 	}
+	
+	sref = sref->next;
+    }
 
-    return 0;
+    if(oknodes == 0)
+    {
+	skygw_log_write(LOGFILE_ERROR,"Error: All attempts to connect to servers failed, closing Galerarouter session.");
+    }
+
+    return oknodes;
 }

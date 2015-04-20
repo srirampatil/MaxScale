@@ -41,27 +41,27 @@
 /** This includes the log manager thread local variables */
 LOG_MANAGER_TLS
 
-DCB* get_dcb_from_hash(slist_cursor_t* cursor, int node);
-
 /**
- * Route a query to each node in the slist. This function assumes that the data
- * held in the slist contains pointers to DCBs each with an open connection to
+ * Route a query to each node in the array. This function assumes that the data
+ * held in the array contains pointers to DCBs each with an open connection to
  * a server. The buffer is cloned for each node so the caller should free the
  * original buffer.
  * @param cursor List of DCBs to use
  * @param buffer Buffer to route
  * @return Number of sent queries
  */
-int route_sescmd(slist_cursor_t* cursor,GWBUF* buffer)
+int route_sescmd(ARRAY* array,GWBUF* buffer)
 {
     DCB *dcb;
     GWBUF* clone;
     int rval = 0;
+    unsigned int i,sz;
 
-    slcursor_move_to_begin(cursor);
+    sz = array_size(array);
 
-    do{
-	dcb = slcursor_get_data(cursor);
+    for(i = 0;i<sz;i++)
+    {
+	dcb = array_fetch(array,i);
 	SCMDCURSOR* cursor = dcb_get_sescmdcursor(dcb);
 
 	if(SERVER_IS_JOINED(dcb->server))
@@ -76,7 +76,7 @@ int route_sescmd(slist_cursor_t* cursor,GWBUF* buffer)
 		rval++;
 	    }
 	}
-    }while(slcursor_step_ahead(cursor));
+    }
 
     return rval;
 }
@@ -142,8 +142,8 @@ int handle_query(GALERA_INSTANCE* inst,GALERA_SESSION* ses,GWBUF *query)
 	{
 	    /** No chosen node yet, hash the query and send it to the server. */
 
-	    hash = hash_query_by_table(query,slist_size(ses->nodes));
-	    dcb = get_dcb_from_hash(ses->nodes,hash);
+	    hash = hash_query_by_table(query,array_size(ses->nodes));
+	    dcb = array_fetch(ses->nodes,hash);
 	    ses->active_node = dcb;
 	    rval = dcb->func.write(dcb,ses->queue);
 	    ses->queue = query;
@@ -168,31 +168,13 @@ int handle_query(GALERA_INSTANCE* inst,GALERA_SESSION* ses,GWBUF *query)
     }
     else if (target == TARGET_MASTER || target == TARGET_UNDEFINED)
     {
-	hash = hash_query_by_table(query,slist_size(ses->nodes));
-	dcb = get_dcb_from_hash(ses->nodes,hash);
+	hash = hash_query_by_table(query,array_size(ses->nodes));
+	dcb = array_fetch(ses->nodes,hash);
 	rval = dcb->func.write(dcb,ses->queue);
     }
 
     // If the query is a read and router load balances reads, send to lowest connection count node and return 1
     return rval;
-}
-
-/**
- * Return the DCB associated with the node number.
- * @param cursor slist with DCBs as data
- * @param node Number of the node
- * @return Pointer to the DCB at position of node
- */
-DCB* get_dcb_from_hash(slist_cursor_t* cursor, int node)
-{
-    int i;
-    
-    slcursor_move_to_begin(cursor);
-
-    for(i = 0;i < node;i++)
-	slcursor_step_ahead(cursor);
-
-    return (DCB*)slcursor_get_data(cursor);
 }
 
 #if BUILD_TOOLS

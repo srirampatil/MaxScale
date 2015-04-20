@@ -75,7 +75,7 @@ static uint8_t getCapabilities (ROUTER* inst,
                                 void* router_session);
 int handle_query(GALERA_INSTANCE* inst,GALERA_SESSION* ses,GWBUF *query);
 int retry_commit(GALERA_SESSION* ses,DCB* dcb);
-
+int refresh_nodes(GALERA_SESSION* session, SERVER_REF* servers);
 static ROUTER_OBJECT MyObject = {
     createInstance,
     newSession,
@@ -153,7 +153,7 @@ static ROUTER* createInstance(SERVICE *service, char **options)
 		    if(config_truth_value(val))
 			inst->safe_reads = true;
 		    else
-			inst->safe_reads = true;
+			inst->safe_reads = false;
 		}
 		else if(strcmp(param,"max_retries") == 0 && val)
 		{
@@ -199,43 +199,32 @@ static void* newSession(ROUTER *instance, SESSION *session)
 	ses->conflict.max_retries = inst->max_retries;
 	spinlock_init(&ses->lock);
 	
-	if((ses->nodes = slist_init()) == NULL)
+	if((ses->nodes = array_init()) == NULL)
 	{
 	    free(ses);
-	    skygw_log_write_flush(LOGFILE_ERROR,"Error: Slist initialization failed.");
+	    skygw_log_write_flush(LOGFILE_ERROR,"Error: Array initialization failed.");
 	    return NULL;
 	}
 
-	sref = inst->service->dbref;
-
-	while(sref)
+	if(refresh_nodes(ses,inst->service->dbref) == 0)
 	{
-	    if((dcb = dcb_connect(sref->server,
-			     session,
-			     sref->server->protocol)))
-	    {
-		slcursor_add_data(ses->nodes,(void*)dcb);
-	    }
-
-	    sref = sref->next;
-	}
-
-	if(slist_size(ses->nodes) == 0)
-	{
-	    slist_done(ses->nodes);
+	    array_free(ses->nodes);
 	    free(ses);
-	    skygw_log_write(LOGFILE_ERROR,"Session creation failed: All attempts to connect to servers failed.");
+	    skygw_log_write(LOGFILE_ERROR,"Session creation failed: Failed to connect to any nodes.");
 	    return NULL;
 	}
 
 	ses->sescmd = sescmdlist_allocate();
 	if(ses->sescmd == NULL)
 	{
-	    slist_done(ses->nodes);
+	    array_free(ses->nodes);
 	    free(ses);
 	    skygw_log_write(LOGFILE_ERROR,"Session creation failed: Failed to allocate session command list.");
+	    return NULL;
 	}
 
+
+	LOGIF(LT,(skygw_log_write(LT,"Started Galerarouter session.")));
     }
     return ses;
 }
@@ -243,16 +232,16 @@ static void* newSession(ROUTER *instance, SESSION *session)
 static void closeSession(ROUTER *instance, void *session)
 {
     GALERA_SESSION* ses = (GALERA_SESSION*)session;
+    int i,sz;
+
     if(spinlock_acquire_with_test(&ses->lock,&ses->closed,false))
     {
-	slcursor_move_to_begin(ses->nodes);
-
-	do
+	sz = array_size(ses->nodes);
+	for(i = 0;i<sz;i++)
 	{
-	    DCB* dcb = slcursor_get_data(ses->nodes);
+	    DCB* dcb = array_fetch(ses->nodes,i);
 	    dcb_close(dcb);
-	    slcursor_remove_data(ses->nodes);
-	}while(slcursor_step_ahead(ses->nodes));
+	}
 
 	ses->closed = true;
 	spinlock_release(&ses->lock);
@@ -262,7 +251,7 @@ static void closeSession(ROUTER *instance, void *session)
 static void freeSession(ROUTER *instance, void *session)
 {
     GALERA_SESSION* ses = (GALERA_SESSION*)session;
-    slist_done(ses->nodes);
+    array_free(ses->nodes);
     free(ses);
 }
 
@@ -282,6 +271,7 @@ static int routeQuery(ROUTER *instance, void *session, GWBUF *query)
 
     if(spinlock_acquire_with_test(&ses->lock,&ses->closed,false))
     {
+	ses->conflict.n_retries = 0;
 	rval = handle_query(inst,ses,query);
 	spinlock_release(&ses->lock);
     }
@@ -345,51 +335,65 @@ static void handleError(ROUTER* instance,
                         error_action_t action,
                         bool* succp)
 {
+    GALERA_INSTANCE* inst = (GALERA_INSTANCE*)instance;
     GALERA_SESSION* ses = (GALERA_SESSION*)router_session;
     int rval = 0;
+    unsigned int i,sz;
+    if(action == ERRACT_RESET)
+    {
+	backend_dcb->dcb_errhandle_called = false;
+	return;
+    }
 
     if(spinlock_acquire_with_test(&ses->lock,&ses->closed,false))
     {
-	if(action == ERRACT_RESET)
+	if(!backend_dcb->dcb_errhandle_called)
 	{
-	    backend_dcb->dcb_errhandle_called = false;
-	    ses->conflict.n_retries = 0;
-	    return;
-	}
 
-	if(backend_dcb->dcb_errhandle_called)
-	    return;
+	    backend_dcb->dcb_errhandle_called = true;
 
-	backend_dcb->dcb_errhandle_called = true;
-
-	switch(action)
-	{
-	case ERRACT_NEW_CONNECTION:
-	    /** node down, close DCB and reassign nodes NOT DONE YET*/
-	    dcb_close(backend_dcb);
-	    break;
-	case ERRACT_REPLY_CLIENT:
-
-	    if(*((unsigned short*)(GWBUF_DATA(errmsgbuf) + 5)) == MYSQL_ER_LOCK_DEADLOCK &&
-	     ses->conflict.n_retries < ses->conflict.max_retries)
+	    switch(action)
 	    {
-		if((rval = retry_commit(ses,backend_dcb)))
+	    case ERRACT_NEW_CONNECTION:
+
+		/** node down, close DCB and reassign nodes*/
+		sz = array_size(ses->nodes);
+
+		for(i = 0;i<sz;i++)
 		{
-		    LOGIF(LT,(skygw_log_write(LT,"Commit retry number %d",ses->conflict.n_retries)));
-		    backend_dcb->dcb_errhandle_called = false;
+		    if(array_fetch(ses->nodes,i) == backend_dcb)
+		    {
+			array_delete(ses->nodes,i);
+			dcb_close(backend_dcb);
+			refresh_nodes(ses,inst->service->dbref);
+			break;
+		    }
 		}
-	    }
 
-	    if(rval == 0)
-	    {
-		backend_dcb->func.write(backend_dcb,errmsgbuf);
-	    }
-	    break;
+		break;
 
-	default:
-	    break;
+	    case ERRACT_REPLY_CLIENT:
+
+		if(*((unsigned short*)(GWBUF_DATA(errmsgbuf) + 5)) == MYSQL_ER_LOCK_DEADLOCK &&
+		 ses->conflict.n_retries < ses->conflict.max_retries)
+		{
+		    if((rval = retry_commit(ses,backend_dcb)))
+		    {
+			LOGIF(LT,(skygw_log_write(LT,"Commit retry number %d",ses->conflict.n_retries)));
+			backend_dcb->dcb_errhandle_called = false;
+		    }
+		}
+
+		if(rval == 0)
+		{
+		    backend_dcb->func.write(backend_dcb,errmsgbuf);
+		}
+		break;
+
+	    default:
+		break;
+	    }
 	}
-
 	spinlock_release(&ses->lock);
     }
 }

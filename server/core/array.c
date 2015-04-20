@@ -56,14 +56,11 @@ void array_free(ARRAY* array)
  */
 void* array_fetch(ARRAY* array,unsigned int index)
 {
+    void* rval;
     spinlock_acquire(&array->lock);
-    if(array->n_elems < index)
-    {
-        spinlock_release(&array->lock);
-        return NULL;
-    }
+    rval = array->n_elems > index ? array->data[index] : NULL;
     spinlock_release(&array->lock);
-    return array->data[index];
+    return rval;
 }
 
 /**
@@ -196,7 +193,11 @@ int array_expand(ARRAY* array,unsigned int newsize)
 }
 
 /**
- * Sort an array with a
+ * Sort an array with a user-provided function. The function is called with the
+ * addresses of two elements in the array.
+ * @param array Array to sort
+ * @param cmpfn Function used for sorting
+ * @see qsort
  */
 void array_sort(ARRAY* array,int(*cmpfn)(const void*,const void*))
 {
@@ -204,9 +205,28 @@ void array_sort(ARRAY* array,int(*cmpfn)(const void*,const void*))
     qsort(array->data,array->n_elems,sizeof(void*),cmpfn);
     spinlock_release(&array->lock);
 }
+
+/**
+ * Remove all elements in the array, reducing the size to 0. The allocated memory
+ * is kept in store for future use.
+ * @param array Array to clear
+ */
 void array_clear(ARRAY* array)
 {
     spinlock_acquire(&array->lock);
     array->n_elems = 0;
     spinlock_release(&array->lock);
+}
+/**
+ * Return the size of the array.
+ * @param array Array to inspect
+ * @return Size of the array
+ */
+unsigned int array_size(ARRAY* array)
+{
+    unsigned int rval;
+    spinlock_acquire(&array->lock);
+    rval = array->n_elems;
+    spinlock_release(&array->lock);
+    return rval;
 }

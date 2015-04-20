@@ -35,6 +35,7 @@
 #include <sescmd.h>
 #include <modutil.h>
 #include <atomic.h>
+#include <array.h>
 
 #define MYSQL_ER_LOCK_DEADLOCK 1213
 
@@ -51,7 +52,7 @@ typedef struct galera_instance_t{
 
 typedef struct galera_session_t{
   SESSION* session; /*< Owning session */
-  slist_cursor_t* nodes; /*< A list of all the connected DCBs */
+  ARRAY* nodes; /*< A list of all the connected DCBs */
   DCB* active_node;/*< Active node */
   SCMDLIST* sescmd; /*< Session commands */
   GWBUF* queue; /*< Stored BEGIN statement or the one after it */
@@ -59,7 +60,7 @@ typedef struct galera_session_t{
   bool autocommit; /*< Autocommit on or off */
   int closed; /*< If session is ready for routing queries */
   SPINLOCK lock; /*< Galera router session spinlock */
-  struct conflict_t conflict; /*< Write conflict amounts and */
+  struct conflict_t conflict; /*< Write conflict amounts and limits*/
 }GALERA_SESSION;
 
 #endif
