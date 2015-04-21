@@ -972,6 +972,7 @@ createInstance(SERVICE *service, char **options)
     if((res_svc = calloc(sz, sizeof(SERVICE*))) == NULL)
     {
 	free(router);
+	free(services);
 	skygw_log_write(LOGFILE_ERROR,"Error: Memory allocation failed.");
 	return NULL;
     }
@@ -1296,11 +1297,10 @@ freeSession(
             void* router_client_session)
 {
     ROUTER_CLIENT_SES* router_cli_ses;
-    ROUTER_INSTANCE* router;
     int i;
 
     router_cli_ses = (ROUTER_CLIENT_SES *) router_client_session;
-    router = (ROUTER_INSTANCE *) router_instance;
+
    
     /** 
      * For each property type, walk through the list, finalize properties 
@@ -2072,11 +2072,9 @@ subsvc_set_state(SUBSERVICE* svc,subsvc_state_t state)
 {
     if(state & SUBSVC_WAITING_RESULT)
     {
-        int prev1;
 
         /** Increase waiter count */
-        prev1 = atomic_add(&svc->n_res_waiting, 1);
-        ss_dassert(prev1 >= 0);
+       atomic_add(&svc->n_res_waiting, 1);
     }
     
     svc->state |= state;
@@ -2089,11 +2087,8 @@ subsvc_clear_state(SUBSERVICE* svc,subsvc_state_t state)
 
     if(state & SUBSVC_WAITING_RESULT)
     {
-        int prev1;
-
         /** Decrease waiter count */
-        prev1 = atomic_add(&svc->n_res_waiting, -1);
-        ss_dassert(prev1 >= 0);
+        atomic_add(&svc->n_res_waiting, -1);
     }
     
     svc->state &= ~state;

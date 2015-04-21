@@ -6,6 +6,9 @@ if(BUILD_TESTS OR BUILD_TOOLS)
 	housekeeper.c memlog.c resultset.c sescmd/sescmd.c sescmd/sescmd_cursor.c
     sescmd/sescmd_list.c)
   add_library(fullcore STATIC ${FULLCORE_SRC})
+  if(WITH_TCMALLOC)
+    target_link_libraries(fullcore ${TCMALLOC_LIBRARIES})
+  endif()
   target_link_libraries(fullcore ${CURL_LIBRARIES} log_manager utils pthread ${EMBEDDED_LIB} ${PCRE_LINK_FLAGS} ssl aio rt crypt dl crypto inih z m stdc++)
 endif()
 
@@ -17,8 +20,13 @@ set(SCMD_SRC "${CMAKE_CURRENT_SOURCE_DIR}/sescmd/sescmd.c ${CMAKE_CURRENT_SOURCE
 add_executable(maxscale atomic.c buffer.c spinlock.c gateway.c array.c
 	gw_utils.c utils.c dcb.c load_utils.c session.c service.c server.c 
 	poll.c config.c users.c hashtable.c dbusers.c thread.c gwbitmask.c 
-	monitor.c adminusers.c secrets.c filter.c modutil.c hint.c resultset.c
-	housekeeper.c memlog.c sescmd/sescmd.c sescmd/sescmd_list.c sescmd/sescmd_cursor.c)
+	monitor.c adminusers.c secrets.c filter.c modutil.c hint.c
+	housekeeper.c memlog.c resultset.c sescmd/sescmd.c sescmd/sescmd_list.c sescmd/sescmd_cursor.c)
+
+if(WITH_TCMALLOC)
+  target_link_libraries(maxscale ${TCMALLOC_LIBRARIES})
+endif()
+
 target_link_libraries(maxscale ${EMBEDDED_LIB} ${PCRE_LINK_FLAGS} ${CURL_LIBRARIES} log_manager utils ssl aio pthread crypt dl crypto inih z rt m stdc++)
 
 install(TARGETS maxscale DESTINATION bin)

@@ -386,6 +386,9 @@ bool parse_showdb_response(ROUTER_CLIENT_SES* rses, backend_ref_t* bref, GWBUF**
        skygw_log_write(LOGFILE_TRACE,"schemarouter: SHOW DATABASES partially received from %s.",
 		       bref->bref_backend->backend_server->unique_name);
    }
+
+   gwbuf_free(buf);
+
    return bref->n_mapping_eof == 2;
 }
 
@@ -854,7 +857,7 @@ static void* newSession(
         {
             
             protocol->client_capabilities &= ~GW_MYSQL_CAPABILITIES_CONNECT_WITH_DB;
-            strncpy(db,data->db,MYSQL_DATABASE_MAXLEN+1);
+            strncpy(db,data->db,MYSQL_DATABASE_MAXLEN);
             memset(data->db,0,MYSQL_DATABASE_MAXLEN+1);
             using_db = true;
             skygw_log_write(LOGFILE_TRACE,"schemarouter: Client logging in directly to a database '%s', "
@@ -1543,6 +1546,12 @@ void check_create_tmp_table(
       free(tblname);
     }
 }
+
+int cmpfn(const void* a, const void *b)
+{
+    return strcmp(*(char**)a,*(char**)b);
+}
+
 /**
  * Generates a custom SHOW DATABASES result set from all the databases in the
  * hashtable. Only backend servers that are up and in a proper state are listed
@@ -1653,35 +1662,69 @@ gen_show_dbs_response(ROUTER_INSTANCE* router, ROUTER_CLIENT_SES* client)
     memcpy(ptr, eof, sizeof(eof));
 
     unsigned int packet_num = 4;
+    int j = 0,ndbs = 0, bufsz = 10;
+    char** dbs;
+
+    if((dbs = malloc(sizeof(char*)*bufsz)) == NULL)
+    {
+	gwbuf_free(rval);
+	hashtable_iterator_free(iter);
+	return NULL;
+    }
 
     while((value = (char*) hashtable_next(iter)))
     {
         char* bend = hashtable_fetch(ht, value);
+
         for(i = 0; backends[i]; i++)
         {
             if(strcmp(bref[i].bref_backend->backend_server->unique_name, bend) == 0 &&
                BREF_IS_IN_USE(&bref[i]) && !BREF_IS_CLOSED(&bref[i]))
             {
+		ndbs++;
 
-                GWBUF* temp;
-                int plen = strlen(value) + 1;
+		if(ndbs >= bufsz)
+		{
+		    bufsz += bufsz / 2;
+		    char** tmp = realloc(dbs,sizeof(char*)*bufsz);
+		    if(tmp == NULL)
+		    {
+			gwbuf_free(rval);
+			hashtable_iterator_free(iter);
+			for(i=0;i<ndbs-1;i++)free(dbs[i]);
+			free(dbs);
+			return NULL;
+		    }
+		    dbs = tmp;
+		}
 
-                sprintf(dbname, "%s", value);
-                temp = gwbuf_alloc(plen + 4);
-
-                ptr = temp->start;
-                *ptr++ = plen;
-                *ptr++ = plen >> 8;
-                *ptr++ = plen >> 16;
-                *ptr++ = packet_num++;
-                *ptr++ = plen - 1;
-                memcpy(ptr, dbname, plen - 1);
-
-                /** Append the row*/
-                rval = gwbuf_append(rval, temp);
-                
+		dbs[j++] = strdup(value);
             }
         }
+    }
+
+    qsort(&dbs[0],(size_t)ndbs,sizeof(char*),cmpfn);
+
+    for(j = 0;j<ndbs;j++)
+    {
+
+	GWBUF* temp;
+	int plen = strlen(dbs[j]) + 1;
+
+	sprintf(dbname, "%s", dbs[j]);
+	temp = gwbuf_alloc(plen + 4);
+
+	ptr = temp->start;
+	*ptr++ = plen;
+	*ptr++ = plen >> 8;
+	*ptr++ = plen >> 16;
+	*ptr++ = packet_num++;
+	*ptr++ = plen - 1;
+	memcpy(ptr, dbname, plen - 1);
+
+	/** Append the row*/
+	rval = gwbuf_append(rval, temp);
+	free(dbs[j]);
     }
 
     eof[3] = packet_num;
@@ -1692,6 +1735,7 @@ gen_show_dbs_response(ROUTER_INSTANCE* router, ROUTER_CLIENT_SES* client)
 
     rval = gwbuf_make_contiguous(rval);
     hashtable_iterator_free(iter);
+    free(dbs);
     return rval;
 }
 
@@ -2257,14 +2301,15 @@ diagnostic(ROUTER *instance, DCB *dcb)
 static void clientReply (
         ROUTER* instance,
         void*   router_session,
-        GWBUF*  writebuf,
+        GWBUF*  buffer,
         DCB*    backend_dcb)
 {
         DCB*               client_dcb;
         ROUTER_CLIENT_SES* router_cli_ses;
 	sescmd_cursor_t*   scur = NULL;
         backend_ref_t*     bref;
-        
+	GWBUF* writebuf = buffer;
+
 	router_cli_ses = (ROUTER_CLIENT_SES *)router_session;
         CHK_CLIENT_RSES(router_cli_ses);
 
@@ -2332,23 +2377,20 @@ static void clientReply (
             bool mapped = true, logged = false;
             int i;
             backend_ref_t* bkrf = router_cli_ses->rses_backend_ref;
-		    GWBUF* tmpbuf = writebuf;
             
             for(i = 0; i < router_cli_ses->rses_nbackends; i++)
             {
-                
                 if(bref->bref_dcb == bkrf[i].bref_dcb && !BREF_IS_MAPPED(&bkrf[i]))
                 {
-
-
 		    if(bref->map_queue)
 		    {
-			tmpbuf = gwbuf_append(bref->map_queue,tmpbuf);
+			writebuf = gwbuf_append(bref->map_queue,writebuf);
+			bref->map_queue = NULL;
 		    }
                     
                     if(parse_showdb_response(router_cli_ses,
                                 &router_cli_ses->rses_backend_ref[i],
-                                &tmpbuf))
+                                &writebuf))
 		    {
 			router_cli_ses->rses_backend_ref[i].bref_mapped = true;
 			 skygw_log_write(LOGFILE_DEBUG,"schemarouter: Received SHOW DATABASES reply from %s for session %p",
@@ -2357,7 +2399,7 @@ static void clientReply (
 		    }
 		    else
 		    {
-			bref->map_queue = tmpbuf;
+			bref->map_queue = writebuf;
 			writebuf = NULL;
 			skygw_log_write(LOGFILE_DEBUG,"schemarouter: Received partial SHOW DATABASES reply from %s for session %p",
                                 router_cli_ses->rses_backend_ref[i].bref_backend->backend_server->unique_name,
@@ -2379,7 +2421,7 @@ static void clientReply (
                 }
             }
             
-	    while(tmpbuf && (tmpbuf = gwbuf_consume(tmpbuf,gwbuf_length(tmpbuf))));
+	    while(writebuf && (writebuf = gwbuf_consume(writebuf,gwbuf_length(writebuf))));
             
             if(mapped)
             {

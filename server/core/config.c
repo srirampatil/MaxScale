@@ -42,6 +42,7 @@
  * 07/11/14	Massimiliano Pinto	Addition of monitor timeouts for connect/read/write
  * 20/02/15	Markus Mäkelä		Added connection_timeout parameter for services
  * 05/03/15	Massimiliano	Pinto	Added notification_feedback support
+ * 20/04/15	Guillaume Lefranc	Added available_when_donor parameter
  *
  * @endverbatim
  */
@@ -309,6 +310,7 @@ int			error_count = 0;
 				char *enable_root_user;
 				char *connection_timeout;
 				char *auth_all_servers;
+				char *optimize_wildcard;
 				char *strip_db_esc;
 				char *weightby;
 				char *version_string;
@@ -330,9 +332,14 @@ int			error_count = 0;
 						obj->parameters,
 						"connection_timeout");
 
-				auth_all_servers = 
+				optimize_wildcard =
 					config_get_value(
 						obj->parameters, 
+						"optimize_wildcard");
+
+				auth_all_servers =
+					config_get_value(
+						obj->parameters,
 						"auth_all_servers");
 
 				strip_db_esc = 
@@ -406,6 +413,10 @@ int			error_count = 0;
 				if(auth_all_servers)
 					serviceAuthAllServers(obj->element, 
 						config_truth_value(auth_all_servers));
+
+				if(optimize_wildcard)
+					serviceOptimizeWildcard(obj->element,
+						config_truth_value(optimize_wildcard));
 
 				if(strip_db_esc)
 					serviceStripDbEsc(obj->element, 
@@ -1426,6 +1437,7 @@ SERVER			*server;
 					char *connection_timeout;
 
 					char* auth_all_servers;
+					char* optimize_wildcard;
 					char* strip_db_esc;
 					char* max_slave_conn_str;
 					char* max_slave_rlag_str;
@@ -1441,6 +1453,7 @@ SERVER			*server;
 								"passwd");
                     
 					auth_all_servers = config_get_value(obj->parameters, "auth_all_servers");
+					optimize_wildcard = config_get_value(obj->parameters, "optimize_wildcard");
 					strip_db_esc = config_get_value(obj->parameters, "strip_db_esc");
 					version_string = config_get_value(obj->parameters, "version_string");
 					allow_localhost_match_wildcard_host = config_get_value(obj->parameters, "localhost_match_wildcard_host");
@@ -1464,9 +1477,11 @@ SERVER			*server;
 
 
                                                 if(auth_all_servers)
-                                                    serviceAuthAllServers(service, atoi(auth_all_servers));
+                                                    serviceAuthAllServers(service, config_truth_value(auth_all_servers));
+						if(optimize_wildcard)
+                                                    serviceOptimizeWildcard(service, config_truth_value(optimize_wildcard));
 						if(strip_db_esc)
-                                                    serviceStripDbEsc(service, atoi(strip_db_esc));
+                                                    serviceStripDbEsc(service, config_truth_value(strip_db_esc));
 
 						if (allow_localhost_match_wildcard_host)
 							serviceEnableLocalhostMatchWildcardHost(
@@ -1575,6 +1590,7 @@ SERVER			*server;
 					char *connection_timeout;
 					char *allow_localhost_match_wildcard_host;
 					char *auth_all_servers;
+					char *optimize_wildcard;
 					char *strip_db_esc;
 
 					enable_root_user = 
@@ -1587,6 +1603,9 @@ SERVER			*server;
 					auth_all_servers = 
                                                 config_get_value(obj->parameters, 
                                                                  "auth_all_servers");
+					optimize_wildcard =
+                                                config_get_value(obj->parameters,
+                                                                 "optimize_wildcard");
 					strip_db_esc = 
                                                 config_get_value(obj->parameters, 
                                                                  "strip_db_esc");
@@ -1837,6 +1856,7 @@ static char *service_params[] =
                 "enable_root_user",
                 "connection_timeout",
                 "auth_all_servers",
+		"optimize_wildcard",
                 "strip_db_esc",
                 "localhost_match_wildcard_host",
                 "max_slave_connections",
@@ -1874,6 +1894,7 @@ static char *monitor_params[] =
 		"backend_connect_timeout",
 		"backend_read_timeout",
 		"backend_write_timeout",
+		"available_when_donor",
                 NULL
         };
 /**
@@ -1998,6 +2019,25 @@ config_truth_value(char *str)
 	return atoi(str);
 }
 
+
+/**
+ * Converts a string into a floating point representation of a percentage value.
+ * For example 75% is converted to 0.75 and -10% is converted to -0.1.
+ * @param	str	String to convert
+ * @return	String converted to a floating point percentage
+ */
+double
+config_percentage_value(char *str)
+{
+    double value = 0;
+
+    value = strtod(str,NULL);
+    if(value != 0)
+	value /= 100.0;
+
+    return value;
+}
+
 static char *InternalRouters[] = {
 	"debugcli",
 	"cli",
@@ -2050,6 +2090,7 @@ config_get_ifaddr(unsigned char *output)
 	ifc.ifc_len = sizeof(buf);
 	ifc.ifc_buf = buf;
 	if (ioctl(sock, SIOCGIFCONF, &ifc) == -1) {
+		close(sock);
 		return 0;
 	}
 
@@ -2066,6 +2107,7 @@ config_get_ifaddr(unsigned char *output)
 				}
 			}
 		} else {
+		    close(sock);
 			return 0;
 		}
 	}
