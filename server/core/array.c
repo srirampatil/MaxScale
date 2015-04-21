@@ -28,7 +28,6 @@ ARRAY* array_init()
             return NULL;
         }
     }
-    spinlock_release(&array->lock);
     return array;
 }
 
@@ -77,8 +76,8 @@ int array_push(ARRAY* array, void* data)
     {
         if(array_expand(array,ARRAY_DEFAULT_INCREMENT*array->size))
         {
-            return 0;
             spinlock_release(&array->lock);
+            return 0;
         }
     }
     array->data[array->n_elems++] = data;
@@ -166,7 +165,7 @@ int array_delete(ARRAY* array, unsigned int index)
     {
         array->data[i] = array->data[i+1];
     }
-
+    spinlock_release(&array->lock);
     return 1;
 }
 
