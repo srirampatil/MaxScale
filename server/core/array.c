@@ -1,4 +1,21 @@
 #include <array.h>
+/*
+ * This file is distributed as part of MaxScale.  It is free
+ * software: you can redistribute it and/or modify it under the terms of the
+ * GNU General Public License as published by the Free Software Foundation,
+ * version 2.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program; if not, write to the Free Software Foundation, Inc., 51
+ * Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *
+ * Copyright MariaDB Corporation Ab 2015
+ */
 
 /** @file array.c Dynamic tightly packed array
  *
@@ -6,6 +23,14 @@
  * their data in a contiguous area of memory. This allows constant time access
  * to all indices and amortized constant time appending of values at the end
  * of the array. The array expands its allocated memory when necessary.
+ * 
+ * @verbatim
+ * Revision History
+ *
+ * Date          Who              Description
+ * 21/04/2015    Markus Makela    Initial implementation
+ *
+ * @endverbatim
  */
 
 int array_expand(ARRAY* array,unsigned int newsize);
@@ -161,6 +186,7 @@ int array_delete(ARRAY* array, unsigned int index)
         spinlock_release(&array->lock);
         return 0;
     }
+
     for(i = index;i<array->n_elems - 1;i++)
     {
         array->data[i] = array->data[i+1];
@@ -180,10 +206,16 @@ int array_expand(ARRAY* array,unsigned int newsize)
 {
     void** newdata;
     
+    if(newsize < array->size)
+	return 1;
+
     if((newdata = realloc(array->data,sizeof(void*)*newsize)) == NULL)
     {
         return 1;
     }
+
+    if(newsize == array->size)
+	return 0;
 
     array->data = newdata;
     array->size = newsize;
@@ -216,6 +248,7 @@ void array_clear(ARRAY* array)
     array->n_elems = 0;
     spinlock_release(&array->lock);
 }
+
 /**
  * Return the size of the array.
  * @param array Array to inspect
