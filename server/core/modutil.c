@@ -537,57 +537,54 @@ return_packetbuf:
  */
 GWBUF* modutil_get_complete_packets(GWBUF** p_readbuf)
 {
-    GWBUF *buff;
-    unsigned char *ptr;
-    int len, blen, total = 0;
+    GWBUF *buff = NULL, *packet;
+    uint8_t *ptr;
+    int len,blen,total = 0;
 
-    if(p_readbuf == NULL || (*p_readbuf) == NULL)
-    {
-        return NULL;
-    }
-    if (NULL != (GWBUF *)(*p_readbuf)->next) *p_readbuf = gwbuf_make_contiguous(*p_readbuf);
-    blen = GWBUF_LENGTH(*p_readbuf);
-    if (blen < 3)
-    {
-        return NULL;
-    }
-    ptr = (unsigned char *)(GWBUF *)(*p_readbuf)->start;
+    if(p_readbuf == NULL || (*p_readbuf) == NULL ||
+       gwbuf_length(*p_readbuf) < 3)
+	return NULL;
+
+    packet = gwbuf_make_contiguous(*p_readbuf);
+    packet->next = NULL;
+    *p_readbuf = packet;
+    ptr = (uint8_t*)packet->start;
     len = gw_mysql_get_byte3(ptr) + 4;
-    if(len > blen)
+    blen = gwbuf_length(packet);
+    
+    if(len == blen)
     {
-        return NULL;
+	    *p_readbuf = NULL;
+	    return packet;
+    }
+    else if(len > blen)
+    {
+	return NULL;
     }
 
     while(total + len < blen)
     {
-        ptr += len;
-        total += len;
-        len = gw_mysql_get_byte3(ptr) + 4;
+	ptr += len;
+	total += len;
+	len = gw_mysql_get_byte3(ptr) + 4;
     }
 
     /** Full packets only, return original */
     if(total + len == blen)
     {
-        buff = *p_readbuf;
-        *p_readbuf = NULL;
-        return buff;
+	*p_readbuf = NULL;
+	return packet;
     }
 
-	/** The next packet is a partial, split into complete and partial packets */
-    if((buff = gwbuf_alloc(total)) != NULL)
+    /** The next packet is a partial, split into complete and partial packets */
+    if((buff = gwbuf_clone_portion(packet,0,total)) == NULL)
     {
-        gwbuf_set_type(buff,GWBUF_TYPE_MYSQL);
-        memcpy(buff->start,(GWBUF *)(*p_readbuf)->start,total);
-        gwbuf_consume(*p_readbuf,total);
-        return buff;
+	skygw_log_write(LOGFILE_ERROR,
+		 "Error: Failed to partially clone buffer.");
+	return NULL;
     }
-	
-    skygw_log_write(LOGFILE_ERROR,
-        "Error: Failed to allocate new buffer "
-        " of %d bytes while splitting buffer"
-        " into complete packets.",
-        total);
-    return NULL;
+    gwbuf_consume(packet,total);
+    return buff;
 }
 
 /**

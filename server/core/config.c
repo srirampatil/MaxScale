@@ -209,12 +209,33 @@ int		rval;
 	conn = mysql_init(NULL);
 	if (conn) {
 		if (mysql_real_connect(conn, NULL, NULL, NULL, NULL, 0, NULL, 0)) {
-			char *ptr;
-			version_string = (char *)mysql_get_server_info(conn);
-			ptr = strstr(version_string, "-embedded");
+			char *ptr,*tmp;
+			
+			tmp = (char *)mysql_get_server_info(conn);
+			unsigned int server_version = mysql_get_server_version(conn);
+			
+			if(version_string)
+			    free(version_string);
+
+			if((version_string = malloc(strlen(tmp) + strlen("5.5.5-") + 1)) == NULL)
+			    return 0;
+
+			if (server_version >= 100000)
+			{
+			    strcpy(version_string,"5.5.5-");
+			    strcat(version_string,tmp);
+			}
+			else
+			{
+			    strcpy(version_string,tmp);
+			}
+
+			ptr = strstr(tmp, "-embedded");
 			if (ptr) {
 				*ptr = '\0';
 			}
+			
+
 		}
 		mysql_close(conn);
 	}
@@ -907,6 +928,10 @@ int			error_count = 0;
 					/* set monitor interval */
 					if (interval > 0)
 						monitorSetInterval(obj->element, interval);
+					else
+					    skygw_log_write(LOGFILE_ERROR,"Warning: Monitor '%s' "
+						    "missing monitor_interval parameter, "
+						    "default value of 10000 miliseconds.",obj->object);
 
 					/* set timeouts */
 					if (connect_timeout > 0)
@@ -1283,7 +1308,7 @@ int i;
         }
 	else if (strcmp(name, "ms_timestamp") == 0)
 	{
-		skygw_set_highp(atoi(value));
+		skygw_set_highp(config_truth_value(value));
 	}
 	else
 	{
@@ -1291,7 +1316,7 @@ int i;
 		{
 			if (strcasecmp(name, lognames[i].logname) == 0)
 			{
-				if (atoi(value))
+				if (config_truth_value(value))
 					skygw_log_enable(lognames[i].logfile);
 				else
 					skygw_log_disable(lognames[i].logfile);
@@ -1470,10 +1495,10 @@ SERVER			*server;
                                                                user,
                                                                auth);
 						if (enable_root_user)
-							serviceEnableRootUser(service, atoi(enable_root_user));
+							serviceEnableRootUser(service, config_truth_value(enable_root_user));
 
 						if (connection_timeout)
-							serviceSetTimeout(service, atoi(connection_timeout));
+							serviceSetTimeout(service, config_truth_value(connection_timeout));
 
 
                                                 if(auth_all_servers)
@@ -1486,7 +1511,7 @@ SERVER			*server;
 						if (allow_localhost_match_wildcard_host)
 							serviceEnableLocalhostMatchWildcardHost(
 								service,
-								atoi(allow_localhost_match_wildcard_host));
+								config_truth_value(allow_localhost_match_wildcard_host));
                                                 
                                                 /** Read, validate and set max_slave_connections */        
                                                 max_slave_conn_str = 
@@ -1626,7 +1651,7 @@ SERVER			*server;
                                                                user,
                                                                auth);
 						if (enable_root_user)
-							serviceEnableRootUser(obj->element, atoi(enable_root_user));
+							serviceEnableRootUser(obj->element, config_truth_value(enable_root_user));
 
 						if (connection_timeout)
 							serviceSetTimeout(obj->element, atoi(connection_timeout));
@@ -1634,7 +1659,7 @@ SERVER			*server;
 						if (allow_localhost_match_wildcard_host)
 							serviceEnableLocalhostMatchWildcardHost(
 								obj->element,
-								atoi(allow_localhost_match_wildcard_host));
+								config_truth_value(allow_localhost_match_wildcard_host));
                                         }
 				}
 			}
