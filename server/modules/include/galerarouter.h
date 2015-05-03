@@ -32,7 +32,7 @@
 #include <skygw_utils.h>
 #include <skygw_types.h>
 #include <mysql_client_server_protocol.h>
-#include <sescmd.h>
+#include <common/sescmd.h>
 #include <modutil.h>
 #include <atomic.h>
 #include <array.h>

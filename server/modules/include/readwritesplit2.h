@@ -31,10 +31,12 @@
 
 #include <dcb.h>
 #include <hashtable.h>
-#include <sescmd.h>
 #include <query_classifier.h>
+#include <common/sescmd.h>
 #include <common/tmptable.h>
 #include <common/routeresolution.h>
+#include <common/transactions.h>
+
 #define BREF_IS_NOT_USED(s)         ((s)->bref_state & ~BREF_IN_USE)
 #define BREF_IS_IN_USE(s)           ((s)->bref_state & BREF_IN_USE)
 #define BREF_IS_WAITING_RESULT(s)   ((s)->bref_num_result_wait > 0)

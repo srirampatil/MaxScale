@@ -20,8 +20,7 @@
 #include <readwritesplit2.h>
 #include <query_classifier.h>
 #include <modutil.h>
-#include <sescmd.h>
-#include <common/routeresolution.h>
+
 /** Defined in log_manager.cc */
 extern int            lm_enabled_logfiles_bitmask;
 extern size_t         log_ses_count[];
@@ -57,18 +56,6 @@ void print_error_packet(
         ROUTER_CLIENT_SES* rses, 
         GWBUF*             buf, 
         DCB*               dcb);
-
-/**
- * Examine the query type, transaction state and routing hints. Find out the
- * target for query routing.
- * 
- *  @param qtype      Type of query 
- *  @param trx_active Is transacation active or not
- *  @param hint       Pointer to list of hints attached to the query buffer
- * 
- *  @return bitfield including the routing target, or the target server name 
- *          if the query would otherwise be routed to slave.
- */
 
 /**
  * Routing function. Find out query type, backend type, and target DCB(s). 
@@ -150,37 +137,8 @@ bool route_single_stmt(
 	 * transaction becomes active and master gets all statements until
 	 * transaction is committed and autocommit is enabled again.
 	 */
-	if (rses->rses_autocommit_enabled &&
-		QUERY_IS_TYPE(qtype, QUERY_TYPE_DISABLE_AUTOCOMMIT))
-	{
-		rses->rses_autocommit_enabled = false;
-		
-		if (!rses->rses_transaction_active)
-		{
-			rses->rses_transaction_active = true;
-		}
-	}
-	else if (!rses->rses_transaction_active &&
-		QUERY_IS_TYPE(qtype, QUERY_TYPE_BEGIN_TRX))
-	{
-		rses->rses_transaction_active = true;
-	}
-	/** 
-	 * Explicit COMMIT and ROLLBACK, implicit COMMIT.
-	 */
-	if (rses->rses_autocommit_enabled &&
-		rses->rses_transaction_active &&
-		(QUERY_IS_TYPE(qtype,QUERY_TYPE_COMMIT) ||
-		QUERY_IS_TYPE(qtype,QUERY_TYPE_ROLLBACK)))
-	{
-		rses->rses_transaction_active = false;
-	} 
-	else if (!rses->rses_autocommit_enabled &&
-		QUERY_IS_TYPE(qtype, QUERY_TYPE_ENABLE_AUTOCOMMIT))
-	{
-		rses->rses_autocommit_enabled = true;
-		rses->rses_transaction_active = false;
-	}        
+	     
+	update_transaction_state(querybuf,&rses->trxstate);
 	
 	if (LOG_IS_ENABLED(LOGFILE_TRACE))
 	{
@@ -196,8 +154,8 @@ bool route_single_stmt(
 			LOGFILE_TRACE,
 				"> Autocommit: %s, trx is %s, cmd: %s, type: %s, "
 				"stmt: %s%s %s",
-				(rses->rses_autocommit_enabled ? "[enabled]" : "[disabled]"),
-				(rses->rses_transaction_active ? "[open]" : "[not open]"),
+				(rses->trxstate.autocommit_on ? "[enabled]" : "[disabled]"),
+				(rses->trxstate.transaction_active ? "[open]" : "[not open]"),
 				STRPACKETTYPE(ptype),
 				(qtypestr==NULL ? "N/A" : qtypestr),
 				contentstr,
@@ -225,7 +183,7 @@ bool route_single_stmt(
 	 *   eventually to master
 	 */
 	route_target = get_route_target(qtype, 
-					rses->rses_transaction_active,
+					rses->trxstate.transaction_active,
 					rses->rses_config.rw_use_sql_variables_in == TYPE_MASTER,
 					querybuf->hint);
 	
@@ -455,7 +413,7 @@ bool route_single_stmt(
 		 */
 		cursor = dcb_get_sescmdcursor(bref->bref_dcb);
 
-		if (sescmd_cursor_is_active(cursor))
+		if (sescmd_has_next(cursor))
 		{
 			ss_dassert(bref->bref_pending_cmd == NULL);
 			bref->bref_pending_cmd = gwbuf_clone(querybuf);

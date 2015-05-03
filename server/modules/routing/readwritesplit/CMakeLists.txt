@@ -3,9 +3,8 @@ if(OLD_RWS)
   target_link_libraries(readwritesplit ssl pthread log_manager utils query_classifier)
   install(TARGETS readwritesplit DESTINATION modules)
 else()
-  add_library(readwritesplit SHARED rws.c rws_session.c rws_error.c rws_utils.c rws_routing.c
-    ${ROUTING_COMMON}/tmptable.c ${ROUTING_COMMON}/routeresolution.c )
-  target_link_libraries(readwritesplit ssl pthread log_manager utils query_classifier)
+  add_library(readwritesplit SHARED rws.c rws_session.c rws_error.c rws_utils.c rws_routing.c)
+  target_link_libraries(readwritesplit ssl pthread log_manager utils query_classifier routing_common)
   install(TARGETS readwritesplit DESTINATION modules)
 endif()
 

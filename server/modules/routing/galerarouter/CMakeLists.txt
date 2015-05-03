@@ -1,5 +1,5 @@
-add_library(galerarouter SHARED glr.c glr_routing.c glr_connections.c glr_error.c ${ROUTING_COMMON}/routeresolution.c)
-target_link_libraries(galerarouter log_manager utils query_classifier)
+add_library(galerarouter SHARED glr.c glr_routing.c glr_connections.c glr_error.c)
+target_link_libraries(galerarouter log_manager utils query_classifier routing_common)
 install(TARGETS galerarouter DESTINATION modules)
 
 if(BUILD_TOOLS)

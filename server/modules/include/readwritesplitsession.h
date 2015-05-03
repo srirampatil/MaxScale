@@ -19,12 +19,11 @@
  */
 
 /**
- * @file router.h - The read write split router module heder file
+ * @file readwritesplitsession.h - Readwritesplit router session
  *
  * @verbatim
- * Revision History
  *
- * See GitHub https://github.com/skysql/MaxScale
+ * See GitHub https://github.com/mariadb-corporation/MaxScale
  *
  * @endverbatim
  */
@@ -100,7 +99,7 @@ struct router_client_session {
         SPINLOCK         rses_lock;      /*< protects rses_deleted                 */
         ROUTER           *instance;      /*< The router instance for which this is a session */
         int              rses_versno;    /*< even = no active update, else odd. not used 4/14 */
-        bool             rses_closed;    /*< true when closeSession is called      */
+        int             rses_closed;    /*< true when closeSession is called      */
 	/** Properties listed by their type */
 	rses_property_t* rses_properties[RSES_PROP_TYPE_COUNT];
         backend_ref_t*   rses_master_ref;
@@ -108,8 +107,7 @@ struct router_client_session {
         rwsplit_config_t rses_config;    /*< copied config info from router instance */
         int              rses_nbackends;
         int              rses_capabilities; /*< input type, for example */
-        bool             rses_autocommit_enabled;
-        bool             rses_transaction_active;
+        TRXSTATE         trxstate;
         SCMDLIST*        rses_sescmd_list; /*< Session commands */
         TMPTABLE*        rses_tmptable; /*< Temporary tables*/
 	struct router_instance	 *router;	/*< The router instance */

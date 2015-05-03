@@ -120,8 +120,8 @@ bool select_connect_backend_servers(
         /** 
          * Set defaults to session variables. 
          */
-        client_rses->rses_autocommit_enabled = true;
-        client_rses->rses_transaction_active = false;
+        client_rses->trxstate.autocommit_on = true;
+        client_rses->trxstate.transaction_active = false;
         
         router_nservers = router_get_servercount(router);
         

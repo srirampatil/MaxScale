@@ -1,5 +1,3 @@
-set(ROUTING_COMMON "${CMAKE_CURRENT_SOURCE_DIR}/common" CACHE INTERNAL "Path to temporary table sources")
-
 if(BUILD_TESTS)
   add_subdirectory(test)
   add_library(testroute SHARED testroute.c)
@@ -27,6 +25,7 @@ add_library(cli SHARED cli.c debugcmd.c)
 target_link_libraries(cli log_manager utils)
 install(TARGETS cli DESTINATION modules)
 
+add_subdirectory(common)
 add_subdirectory(readwritesplit)
 add_subdirectory(schemarouter/test)
 add_subdirectory(galerarouter)

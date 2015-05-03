@@ -1,4 +1,4 @@
-#include <sescmd.h>
+#include <common/sescmd.h>
 #include <strings.h>
 
 /**

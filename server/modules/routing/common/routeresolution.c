@@ -15,6 +15,7 @@
  *
  * Copyright MariaDB Corporation Ab 2015
  */
+
 /**
  * @file routeresolve.c routing target resolving functions
  *
@@ -28,12 +29,13 @@
  *
  * @endverbatim
  */
+
 #include <stdlib.h>
 #include <skygw_utils.h>
 #include <query_classifier.h>
 #include <strings.h>
 #include <modutil.h>
-#include <sescmd.h>
+#include <common/sescmd.h>
 #include <common/routeresolution.h>
 /** This includes the log manager thread local variables */
 LOG_MANAGER_TLS
