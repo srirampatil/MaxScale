@@ -33,7 +33,7 @@
 #include <hashtable.h>
 #include <sescmd.h>
 #include <query_classifier.h>
-#include <tmptable.h>
+#include <common/tmptable.h>
 #include <common/routeresolution.h>
 #define BREF_IS_NOT_USED(s)         ((s)->bref_state & ~BREF_IN_USE)
 #define BREF_IS_IN_USE(s)           ((s)->bref_state & BREF_IN_USE)

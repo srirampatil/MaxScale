@@ -153,6 +153,7 @@ bool sescmdlist_execute(SCMDCURSOR*);
 bool sescmdlist_is_active(SCMDLIST* , DCB* );
 bool sescmd_has_next(SCMDCURSOR*);
 GWBUF* sescmd_get_next(SCMDCURSOR*);
+bool sescmd_has_next(SCMDCURSOR* cursor);
 bool sescmdlist_process_replies(SCMDCURSOR*, GWBUF** );
 bool sescmd_handle_failure(SCMDLIST* list, DCB* dcb);
 #endif	/* SESCMD_H */

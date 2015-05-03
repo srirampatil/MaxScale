@@ -97,7 +97,7 @@ bool route_single_stmt(
 	int                rlag_max       = MAX_RLAG_UNDEFINED;
 	backend_type_t     btype; /*< target backend type */
 	char* dbname;
-	
+	SCMDCURSOR* cursor;
 	
 	ss_dassert(!GWBUF_IS_TYPE_UNDEFINED(querybuf));
 	packet = GWBUF_DATA(querybuf);
@@ -453,7 +453,9 @@ bool route_single_stmt(
 		 * somehow wrong, or client is sending more queries before 
 		 * previous is received.
 		 */
-		if (BREF_IS_WAITING_RESULT(bref))
+		cursor = dcb_get_sescmdcursor(bref->bref_dcb);
+
+		if (sescmd_cursor_is_active(cursor))
 		{
 			ss_dassert(bref->bref_pending_cmd == NULL);
 			bref->bref_pending_cmd = gwbuf_clone(querybuf);

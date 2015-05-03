@@ -16,7 +16,7 @@
  * Copyright MariaDB Corporation Ab 2013-2015
  */
 
-#include <tmptable.h>
+#include <common/tmptable.h>
 
 /** Defined in log_manager.cc */
 extern int            lm_enabled_logfiles_bitmask;
