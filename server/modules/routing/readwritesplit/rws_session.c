@@ -97,7 +97,7 @@ bool select_connect_backend_servers(
         client_rses->rses_chk_tail = CHK_NUM_ROUTER_SES;
 #endif
 
-	client_rses->router = router;
+	client_rses->instance = router;
         /** 
          * If service config has been changed, reload config from service to 
          * router instance first.

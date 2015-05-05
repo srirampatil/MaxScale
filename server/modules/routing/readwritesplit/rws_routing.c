@@ -189,6 +189,24 @@ bool route_single_stmt(
 	
 	if(skygw_is_session_command(querybuf))
 	{
+	    if(TARGET_IS_MASTER(route_target))
+	    {
+		/** Using the error number and SQL state of ER_NOT_SUPPORTED_YET
+		 * for the uservar modification in SELECT error.
+		 *
+		 * Error: 1235 SQLSTATE: 42000 (ER_NOT_SUPPORTED_YET)
+		 * Message: This version of MySQL doesn't yet support '%s'
+		 */
+		GWBUF* errbuf = modutil_create_mysql_err_msg(
+			1,0,1235,
+			"42000",
+			 "Error: User variable modification in SELECT query is not supported.");
+		DCB* client = rses->rses_master_ref->bref_dcb->session->client;
+		client->func.write(client,errbuf);
+		succp = true;
+		goto retblock;
+	    }
+
 	    succp = route_session_write(
 					rses, 
 					gwbuf_clone(querybuf), 
@@ -725,9 +743,11 @@ bool route_session_write(
 	{
 	    if(BREF_IS_IN_USE(&router_cli_ses->rses_backend_ref[i]))
 	    {
+		nbackends++;
 		SCMDCURSOR* cursor;
 		cursor = dcb_get_sescmdcursor(router_cli_ses->rses_backend_ref[i].bref_dcb);
-		sescmdlist_execute(cursor);
+		if(sescmdlist_execute(cursor))
+		    nsucc++;
 	    }
 	}
 
