@@ -15,7 +15,7 @@ macro(set_maxscale_version)
   set(MAXSCALE_VERSION "${MAXSCALE_VERSION_MAJOR}.${MAXSCALE_VERSION_MINOR}.${MAXSCALE_VERSION_PATCH}")
 
   # This should be incremented each time a package is rebuilt
-  set(MAXSCALE_BUILD_NUMBER 2)
+  set(MAXSCALE_BUILD_NUMBER 3)
 endmacro()
 
 macro(set_variables)
