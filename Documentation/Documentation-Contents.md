@@ -34,7 +34,7 @@
  - [Filter Tutorial](Tutorials/Filter-Tutorial.md)
  - [Galera Cluster Connection Routing Tutorial](Tutorials/Galera-Cluster-Connection-Routing-Tutorial.md)
  - [Galera Cluster Read-Write Splitting Tutorial](Tutorials/Galera-Cluster-Read-Write-Splitting-Tutorial.md)
- - [MaxScale Information Schema Tutorial](Tutorials/MaxScale-Informaton-Schema.md)
+ - [MaxScale Information Schema Tutorial](Tutorials/MaxScale-Information-Schema.md)
  - [MySQL Replication Connection Routing Tutorial](Tutorials/MySQL-Replication-Connection-Routing-Tutorial.md)
  - [MySQL Replication Read-Write Splitting Tutorial](Tutorials/MySQL-Replication-Read-Write-Splitting-Tutorial.md)
  - [MySQL Cluster Setup](Tutorials/MySQL-Cluster-Setup.md)
@@ -43,6 +43,8 @@
  - [Nagios Plugins for MaxScale Tutorial](Tutorials/Nagios-Plugins.md)
 
 ## Filters
+
+Here are detailed documents about the filters MaxScale offers. They contain configuration guides and example use cases. Before reading these,you should have read the filter tutorial so that you know how they work and how to configure them.
 
  - [Query Log All](filters/Query-Log-All-Filter.md)
  - [Regex Filter](filters/Regex-Filter.md)
