@@ -268,6 +268,7 @@ struct router_client_session {
         SPINLOCK         rses_lock;      /*< protects rses_deleted                 */
         int              rses_versno;    /*< even = no active update, else odd. not used 4/14 */
         bool             rses_closed;    /*< true when closeSession is called      */
+        bool             rses_failed;    /*< true when closeSession is called      */
 	    DCB*			 rses_client_dcb;
 	    MYSQL_session*   rses_mysql_session; /*< Session client data (username, password, SHA1). */
 	/** Properties listed by their type */
@@ -282,7 +283,7 @@ struct router_client_session {
 	struct router_instance	 *router;	/*< The router instance */
         struct router_client_session* next; /*< List of router sessions */
         HASHTABLE*      dbhash; /*< Database hash containing names of the databases mapped to the servers that contain them */
-        char            connect_db[MYSQL_DATABASE_MAXLEN+1]; /*< Database the user was trying to connect to */
+        char            current_db[MYSQL_DATABASE_MAXLEN+1]; /*< Database the user was trying to connect to */
         init_mask_t    init; /*< Initialization state bitmask */
         GWBUF*          queue; /*< Query that was received before the session was ready */
         DCB*            dcb_route; /*< Internal DCB used to trigger re-routing of buffers */
@@ -290,6 +291,7 @@ struct router_client_session {
         ROUTER_STATS    stats;     /*< Statistics for this router         */
         int             n_sescmd;
         int             pos_generator;
+        mysql_server_cmd_t last_cmd;
 #if defined(SS_DEBUG)
         skygw_chk_t      rses_chk_tail;
 #endif

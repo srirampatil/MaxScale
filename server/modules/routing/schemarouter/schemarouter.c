@@ -501,9 +501,9 @@ char* get_shard_target_name(ROUTER_INSTANCE* router, ROUTER_CLIENT_SES* client, 
         
         if(tmp == NULL)
         {
-            rval = (char*) hashtable_fetch(ht, client->rses_mysql_session->db);
+            rval = (char*) hashtable_fetch(ht, client->current_db);
             skygw_log_write(LOGFILE_TRACE,"schemarouter: SHOW TABLES query, current database '%s' on server '%s'",
-                            client->rses_mysql_session->db,rval);
+                            client->current_db,rval);
         }
         else
         {
@@ -530,17 +530,17 @@ char* get_shard_target_name(ROUTER_INSTANCE* router, ROUTER_CLIENT_SES* client, 
         }
     }
     
-    if(rval == NULL && !has_dbs && client->rses_mysql_session->db[0] != '\0')
+    if(rval == NULL && !has_dbs && client->current_db[0] != '\0')
     {
         /**
          * If the target name has not been found and the session has an
          * active database, set is as the target
          */
 
-        rval = (char*) hashtable_fetch(ht, client->rses_mysql_session->db);
+        rval = (char*) hashtable_fetch(ht, client->current_db);
 	if(rval)
 	{
-	    skygw_log_write(LOGFILE_TRACE,"schemarouter: Using active database '%s'",client->rses_mysql_session->db);
+	    skygw_log_write(LOGFILE_TRACE,"schemarouter: Using active database '%s'",client->current_db);
 	}
     }
    
@@ -893,14 +893,14 @@ static void* newSession(
         if(protocol->client_capabilities & GW_MYSQL_CAPABILITIES_CONNECT_WITH_DB &&
 	   (have_db = strnlen(data->db,MYSQL_DATABASE_MAXLEN) > 0))
         {
-            
-            protocol->client_capabilities &= ~GW_MYSQL_CAPABILITIES_CONNECT_WITH_DB;
             strncpy(db,data->db,MYSQL_DATABASE_MAXLEN);
-            memset(data->db,0,MYSQL_DATABASE_MAXLEN+1);
             using_db = true;
             skygw_log_write(LOGFILE_TRACE,"schemarouter: Client logging in directly to a database '%s', "
                     "postponing until databases have been mapped.",db);
         }
+
+	protocol->client_capabilities &= ~GW_MYSQL_CAPABILITIES_CONNECT_WITH_DB;
+	memset(data->db,0,MYSQL_DATABASE_MAXLEN+1);
 
 	if(!have_db)
 	{
@@ -935,6 +935,7 @@ static void* newSession(
     client_rses->dcb_route->func.read = internalRoute;
     client_rses->dcb_route->state = DCB_STATE_POLLING;
     client_rses->dcb_route->session = session;
+    client_rses->rses_failed = false;
     client_rses->init = INIT_UNINT;
     if(using_db)
         client_rses->init |= INIT_USE_DB;
@@ -1045,7 +1046,7 @@ static void* newSession(
         if(db[0] != 0x0)
         {
             /* Store the database the client is connecting to */
-            strncpy(client_rses->connect_db,db,MYSQL_DATABASE_MAXLEN+1);
+            strncpy(client_rses->current_db,db,MYSQL_DATABASE_MAXLEN+1);
         }
         
              
@@ -1380,7 +1381,7 @@ ROUTER* instance,
     rses_property_t*   rses_prop_tmp;
 
     rses_prop_tmp = router_cli_ses->rses_properties[RSES_PROP_TYPE_TMPTABLES];
-    dbname = router_cli_ses->rses_mysql_session->db;
+    dbname = router_cli_ses->current_db;
 
     if (is_drop_table_query(querybuf))
     {
@@ -1438,7 +1439,7 @@ ROUTER* instance,
     rses_property_t*   rses_prop_tmp;
 
     rses_prop_tmp = router_cli_ses->rses_properties[RSES_PROP_TYPE_TMPTABLES];
-    dbname = router_cli_ses->rses_mysql_session->db;
+    dbname = router_cli_ses->current_db;
 
     if (QUERY_IS_TYPE(qtype, QUERY_TYPE_READ) ||
 	QUERY_IS_TYPE(qtype, QUERY_TYPE_LOCAL_READ) ||
@@ -1517,7 +1518,7 @@ void check_create_tmp_table(
   HASHTABLE*	   h;
 
   rses_prop_tmp = router_cli_ses->rses_properties[RSES_PROP_TYPE_TMPTABLES];
-  dbname = router_cli_ses->rses_mysql_session->db;
+  dbname = router_cli_ses->current_db;
 
 
   if (QUERY_IS_TYPE(type, QUERY_TYPE_CREATE_TMP_TABLE))
@@ -1832,6 +1833,7 @@ static int routeQuery(
         ROUTER_INSTANCE*   inst = (ROUTER_INSTANCE *)instance;
         ROUTER_CLIENT_SES* router_cli_ses = (ROUTER_CLIENT_SES *)router_session;
         bool               rses_is_closed = false;
+	bool failed = false;
 		bool			   change_successful = false;
         route_target_t     route_target = TARGET_UNDEFINED;
 	bool           	   succp          = false;
@@ -1846,6 +1848,10 @@ static int routeQuery(
         {
                 rses_is_closed = true;
         }
+
+	if(router_cli_ses->rses_failed)
+	    failed = true;
+
         ss_dassert(!GWBUF_IS_TYPE_UNDEFINED(querybuf));
 
         if (!rses_begin_locked_router_action(router_cli_ses))
@@ -1857,7 +1863,12 @@ static int routeQuery(
 		goto retblock;
 	}
 
-        if(!(rses_is_closed = router_cli_ses->rses_closed))
+	if(router_cli_ses->rses_failed)
+	    failed = true;
+	if(router_cli_ses->rses_closed)
+	    rses_is_closed = true;
+
+        if(!failed && !rses_is_closed)
         {
 	    if(router_cli_ses->init & INIT_UNINT)
 	    {
@@ -1901,15 +1912,28 @@ static int routeQuery(
 	
         packet = GWBUF_DATA(querybuf);
         packet_type = packet[4];
-
-	if (rses_is_closed)
+	router_cli_ses->last_cmd = packet_type;
+	if (rses_is_closed || failed)
         {
-                /** 
-                 * MYSQL_COM_QUIT may have sent by client and as a part of backend 
-                 * closing procedure.
-                 */
-                if (packet_type != MYSQL_COM_QUIT)
+                
+		if(failed)
+		{
+		    /** Currently only unknown databases cause a failure */
+		    GWBUF *ebuf;
+		    DCB *dcb;
+		    char emsg[1024];
+
+		    dcb = router_cli_ses->rses_client_dcb;
+		    sprintf(emsg,"Unknown database '%s'",router_cli_ses->current_db);
+		    ebuf = modutil_create_mysql_err_msg(1,0,1049,"42000",emsg);
+		    dcb->func.write(dcb,ebuf);
+		}
+		else if (packet_type != MYSQL_COM_QUIT)
                 {
+		    /**
+		     * MYSQL_COM_QUIT may have sent by client and as a part of backend
+		     * closing procedure.
+		     */
                         char* query_str = modutil_get_query(querybuf);
                         
                         LOGIF(LE, 
@@ -2053,12 +2077,12 @@ static int routeQuery(
 	    op == QUERY_OP_CHANGE_DB)
 	{
 		route_target = TARGET_UNDEFINED;
-                tname = hashtable_fetch(router_cli_ses->dbhash,router_cli_ses->rses_mysql_session->db);
+                tname = hashtable_fetch(router_cli_ses->dbhash,router_cli_ses->current_db);
                 
 		if(tname)
 		{
                     skygw_log_write(LOGFILE_TRACE,"schemarouter: INIT_DB for database '%s' on server '%s'",
-                                    router_cli_ses->rses_mysql_session->db,tname);
+                                    router_cli_ses->current_db,tname);
                     route_target = TARGET_NAMED_SERVER;
 		}
                 else
@@ -2094,9 +2118,9 @@ static int routeQuery(
 
 		if( (tname == NULL &&
              packet_type != MYSQL_COM_INIT_DB && 
-             router_cli_ses->rses_mysql_session->db[0] == '\0') || 
+             router_cli_ses->current_db[0] == '\0') ||
 		   packet_type == MYSQL_COM_FIELD_LIST || 
-		   (router_cli_ses->rses_mysql_session->db[0] != '\0'))
+		   (router_cli_ses->current_db[0] != '\0'))
 		{
 			/**
 			 * No current database and no databases in query or
@@ -2487,7 +2511,8 @@ static void clientReply (
 			router_cli_ses->queue == NULL ? "none" :
 			    router_cli_ses->queue->next ? "multiple":"one");
 
-
+	/** The databases have not been fully mapped and this is a response to a
+	 * SHOW DATABASES query. */
 
         if(router_cli_ses->init & INIT_MAPPING)
         {
@@ -2555,13 +2580,13 @@ static void clientReply (
                     char* target;
                     
                     if((target = hashtable_fetch(router_cli_ses->dbhash,
-                                       router_cli_ses->connect_db)) == NULL)
+                                       router_cli_ses->current_db)) == NULL)
                     {
 			/** Unknown database, hang up on the client*/
                         skygw_log_write_flush(LOGFILE_TRACE,"schemarouter: Connecting to a non-existent database '%s'",
-                                              router_cli_ses->connect_db);
+                                              router_cli_ses->current_db);
 			char errmsg[128 + MYSQL_DATABASE_MAXLEN+1];
-			sprintf(errmsg,"Unknown database '%s'",router_cli_ses->connect_db);
+			sprintf(errmsg,"Unknown database '%s'",router_cli_ses->current_db);
 			GWBUF* errbuff = modutil_create_mysql_err_msg(1,0,1049,"42000",errmsg);
 			router_cli_ses->rses_client_dcb->func.write(router_cli_ses->rses_client_dcb,errbuff);
                         if(router_cli_ses->queue)
@@ -2569,8 +2594,8 @@ static void clientReply (
                             while((router_cli_ses->queue = gwbuf_consume(
 				   router_cli_ses->queue,gwbuf_length(router_cli_ses->queue))));
 			}
+			router_cli_ses->rses_failed = true;
                         rses_end_locked_router_action(router_cli_ses);
-			router_cli_ses->rses_client_dcb->func.hangup(router_cli_ses->rses_client_dcb);
                         return;
                     }
                     
@@ -2580,7 +2605,7 @@ static void clientReply (
                     unsigned int qlen;
                     GWBUF* buffer;
                     
-                    qlen = strlen(router_cli_ses->connect_db);
+                    qlen = strlen(router_cli_ses->current_db);
                     buffer = gwbuf_alloc(qlen + 5);                    
                     if(buffer == NULL)
                     {
@@ -2596,14 +2621,14 @@ static void clientReply (
                     gwbuf_set_type(buffer,GWBUF_TYPE_MYSQL);
                     *((unsigned char*)buffer->start + 3) = 0x0;
                     *((unsigned char*)buffer->start + 4) = 0x2;
-                    memcpy(buffer->start+5,router_cli_ses->connect_db,qlen);
+                    memcpy(buffer->start+5,router_cli_ses->current_db,qlen);
                     DCB* dcb = NULL;
                     
                     if(get_shard_dcb(&dcb,router_cli_ses,target))
                     {
                         dcb->func.write(dcb,buffer);        
-                        skygw_log_write(LOGFILE_DEBUG,"schemarouter: USE '%s' sent to %s for session %p",
-                                        router_cli_ses->connect_db,
+                        skygw_log_write_flush(LOGFILE_DEBUG|LOGFILE_TRACE,"schemarouter: USE '%s' sent to %s for session %p",
+                                        router_cli_ses->current_db,
                                         target,
                                         router_cli_ses->rses_client_dcb->session);
                     }
@@ -2653,21 +2678,20 @@ static void clientReply (
            poll_add_epollin_event_to_dcb(router_cli_ses->dcb_route,tmp);
            free(querystr);          
         }
-        
+
         if(router_cli_ses->init & INIT_USE_DB)
         {
             skygw_log_write(LOGFILE_DEBUG,"schemarouter: Reply to USE '%s' received for session %p",
-                            router_cli_ses->connect_db,
+                            router_cli_ses->current_db,
                             router_cli_ses->rses_client_dcb->session);
             router_cli_ses->init &= ~INIT_USE_DB;
-            strcpy(router_cli_ses->rses_mysql_session->db,router_cli_ses->connect_db);
             ss_dassert(router_cli_ses->init == INIT_READY);
-            rses_end_locked_router_action(router_cli_ses);
 	    if(writebuf)
 		while((writebuf = gwbuf_consume(writebuf,gwbuf_length(writebuf))));
+            rses_end_locked_router_action(router_cli_ses);
             return;
         }
-        
+
         CHK_BACKEND_REF(bref);
         scur = &bref->bref_sescmd_cur;
         /**
@@ -4157,7 +4181,7 @@ static bool handle_error_new_connection(
 
 	backend_ref_t* bref;
 	bool           succp;
-	
+
 	ss_dassert(SPINLOCK_IS_LOCKED(&rses->rses_lock));
 	
 	ses = backend_dcb->session;
@@ -4188,6 +4212,12 @@ static bool handle_error_new_connection(
 	}
 	bref_clear_state(bref, BREF_IN_USE);
 	bref_set_state(bref, BREF_CLOSED);
+	atomic_add(&bref->bref_backend->backend_server->stats.n_current,-1);
+	if(rses->last_cmd == MYSQL_COM_QUIT)
+	{
+	    succp = false;
+	    goto return_succp;
+	}
 
 	/** 
 	 * Error handler is already called for this DCB because
@@ -4198,7 +4228,7 @@ static bool handle_error_new_connection(
 	{
 		succp = true;
 		goto return_succp;
-	}	
+	}
 	/** 
 	 * Remove callback because this DCB won't be used 
 	 * unless it is reconnected later, and then the callback
@@ -4215,27 +4245,19 @@ static bool handle_error_new_connection(
 	 * number of slave connections for router session.
 	 */
 	succp = connect_backend_servers(
-			rses->rses_backend_ref,
-			router_nservers,
-			ses,
-			inst);
-        
-        if(!have_servers(rses))
-        {
-            skygw_log_write(LOGFILE_ERROR,"Error : No more valid servers, closing session");
-            succp = false;
-            goto return_succp;
-        }
-        
-        rses->init |= INIT_MAPPING;
+		rses->rses_backend_ref,
+				 router_nservers,
+				 ses,
+				 inst);
 
-        for(i = 0;i<rses->rses_nbackends;i++)
-        {
-            bref_clear_state(&rses->rses_backend_ref[i],BREF_DB_MAPPED);
-	    rses->rses_backend_ref[i].n_mapping_eof = 0;
-        }
-        
-        HASHITERATOR* iter  = hashtable_iterator(rses->dbhash);
+	if(!have_servers(rses))
+	{
+	    skygw_log_write(LOGFILE_ERROR,"Error : No more valid servers, closing session");
+	    succp = false;
+	    goto return_succp;
+	}
+
+	HASHITERATOR* iter  = hashtable_iterator(rses->dbhash);
         char* srvnm = bref->bref_backend->backend_server->unique_name;
         char *key, *value;
         while((key = (char*)hashtable_next(iter)))
@@ -4246,9 +4268,12 @@ static bool handle_error_new_connection(
                 hashtable_delete(rses->dbhash,key);
             }
         }
-        
-        skygw_log_write(LOGFILE_TRACE,"schemarouter: Re-mapping databases");
+
+	/** This is disabled pending review */
+#ifdef REMAP_ON_FAILURE
+        skygw_log_write(LOGFILE_TRACE,"schemarouter: Re-mapping databases. Last cmd: %s",STRPACKETTYPE(rses->last_cmd));
         gen_databaselist(rses->router,rses);
+#endif
 	hashtable_iterator_free(iter);
 return_succp:
 	return succp;        
