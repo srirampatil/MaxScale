@@ -446,6 +446,7 @@ backend_write_timeout=2
 # galeramon specific options
 disable_master_failback=0
 available_when_donor=0
+disable_master_role_setting=0
 ```
 
 #### `module`
@@ -517,6 +518,13 @@ Anyway, a new master will be selected in case of current master failure, regardl
 This option if set to 1 will allow Galera monitor to keep a node in `Donor` status in the server pool if it is using any xtrabackup method for SST, e.g. `wsrep_sst_method` equal to `xtrabackup` or `xtrabackup-v2`.
 
 As xtrabackup is a non-locking SST method, a node in `Donor` status can still be considered in sync. This option is not enabled by default and should be used as the administrator's discretion.
+
+#### `disable_master_role_setting`
+
+This option if set to 1 will stop the Galera monitor from setting the status of
+backend servers to master or slave.  It is applicable when the Galera router is
+being used to spread writes across multiple nodes, so that no server is to be
+nominated as the master.
 
 #### `backend_connect_timeout`
 
@@ -768,23 +776,23 @@ The configuration consists of mandatory and optional parameters.
 
 ###### Mandatory parameters
 
-`type` specifies the type of service. For **readwritesplit** module the type is `router`:
+**`type`** specifies the type of service. For **readwritesplit** module the type is `router`:
 
     type=router
 
-`service` specifies the router module to be used. For **readwritesplit** the value is `readwritesplit`:
+**`service`** specifies the router module to be used. For **readwritesplit** the value is `readwritesplit`:
 
     service=readwritesplit
 
-`servers` provides a list of servers, which must include one master and available slaves:
+**`servers`** provides a list of servers, which must include one master and available slaves:
 
     servers=server1,server2,server3
 
 **NOTE: Each server on the list must have its own section in the configuration file where it is defined.**
 
-`user` is the username the router session uses for accessing backends in order to load the content of the `mysql.user` table (and `mysql.db` and database names as well) and optionally for creating, and using `maxscale_schema.replication_heartbeat` table.
+**`user`** is the username the router session uses for accessing backends in order to load the content of the `mysql.user` table (and `mysql.db` and database names as well) and optionally for creating, and using `maxscale_schema.replication_heartbeat` table.
 
-`passwd` specifies corresponding password for the user. Syntax for user and passwd is:
+**`passwd`** specifies corresponding password for the user. Syntax for user and passwd is:
 
 ```
 user=<username>
@@ -793,18 +801,18 @@ passwd=<password>
 
 ###### Optional parameters
 
-`max_slave_connections` sets the maximum number of slaves a router session uses at any moment. Default value is `1`.
+**`max_slave_connections`** sets the maximum number of slaves a router session uses at any moment. Default value is `1`.
 
 	max_slave_connections=<max. number, or % of available slaves>
 
-`max_slave_replication_lag` specifies how many seconds a slave is allowed to be behind the master. If the lag is bigger than configured value a slave can't be used for routing.
+**`max_slave_replication_lag`** specifies how many seconds a slave is allowed to be behind the master. If the lag is bigger than configured value a slave can't be used for routing.
 
 	max_slave_replication_lag=<allowed lag in seconds>
 
 This applies to Master/Slave replication with MySQL monitor and `detect_replication_lag=1` options set.
 Please note max_slave_replication_lag must be greater than monitor interval.
 
-`router_options` may include multiple **readwritesplit**-specific options. Values are either singular or parameter-value pairs. Currently available is a single option which specifies the criteria used in slave selection both in initialization of router session and per each query. Note that due to the current monitor implementation, the value specified here should be *<twice the monitor interval>* + 1.
+**`router_options`** may include multiple **readwritesplit**-specific options. Values are either singular or parameter-value pairs. Currently available is a single option which specifies the criteria used in slave selection both in initialization of router session and per each query. Note that due to the current monitor implementation, the value specified here should be *<twice the monitor interval>* + 1.
 
 	options=slave_selection_criteria=<criteria>
 
@@ -815,7 +823,7 @@ where *<criteria>* is one of the following:
 * `LEAST_BEHIND_MASTER`, the slave with smallest replication lag
 * `LEAST_CURRENT_OPERATIONS` (default), the slave with least active operations
 
-`use_sql_variables_in` specifies where should queries, which read session variable, be routed. The syntax for `use_sql_variable_in` is:
+**`use_sql_variables_in`** specifies where should queries, which read session variable, be routed. The syntax for `use_sql_variable_in` is:
 
     use_sql_variables_in=[master|all]
 
@@ -825,13 +833,25 @@ When value all is used, queries reading session variables can be routed to any a
 
 In above-mentioned case the user-defined variable would only be updated in the master where query would be routed due to `INSERT` statement.
 
-`max_sescmd_history` sets a limit on how many session commands each session can execute before the connection is closed. The default is an unlimited number of session commands.
+**`max_sescmd_history`** sets a limit on how many session commands each session can execute before the connection is closed. The default is an unlimited number of session commands.
 
 	max_sescmd_history=1500
 
 When a limitation is set, it effectively creates a cap on the session's memory consumption. This might be useful if connection pooling is used and the sessions use large amounts of session commands.
 
-`disable_sescmd_history=true|false` disables the session command history. This way nothing is stored and if a slave server fails and a new one is taken in its stead, the session on that server will be in an inconsistent state compared to the master server. Disabling session command history will allow connection pooling without causing a constant growth in the memory consumption.
+**`disable_sescmd_history`** disables the session command history. This way nothing is stored and if a slave server fails and a new one is taken in its stead, the session on that server will be in an inconsistent state compared to the master server. Disabling session command history will allow connection pooling without causing a constant growth in the memory consumption.
+
+```
+# Disable the session command history
+disable_sescmd_history=true
+```
+
+**`disable_slave_recovery`** disables the recovery and replacement of slave servers. If this option is enabled and a connection to a slave server in use is lost, no replacement slave will be taken. This allows the safe use of session state modifying statements when the session command history is disabled. This is mostly intended to be used with the `disable_sescmd_history` option enabled.
+
+```
+# Disable the session command history
+disable_slave_recovery=true
+```
 
 An example of Read/Write Split router configuration :
 
@@ -1377,11 +1397,11 @@ Example:
 ```
 [Galera Listener]
 type=listener
-address=192.1681.3.33
+address=192.168.3.33
 port=4408
 socket=/servers/maxscale/galera.sock
 ```
 
-TCP/IP Traffic must be permitted to 192.1681.3.33 port 4408
+TCP/IP Traffic must be permitted to 192.168.3.33 port 4408
 
 For Unix socket, the socket file path (example: `/servers/maxscale/galera.sock`) must be writable by the Unix user MaxScale runs as.
