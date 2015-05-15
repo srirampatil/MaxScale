@@ -937,6 +937,8 @@ static void* newSession(
     client_rses->dcb_route->session = session;
     client_rses->rses_failed = false;
     client_rses->init = INIT_UNINT;
+    memset(client_rses->current_db,'\0',MYSQL_DATABASE_MAXLEN+1);
+
     if(using_db)
         client_rses->init |= INIT_USE_DB;
         /** 
@@ -2035,7 +2037,7 @@ static int routeQuery(
         if (packet_type == MYSQL_COM_INIT_DB ||
 	    op == QUERY_OP_CHANGE_DB)
 	{
-	    if (!(change_successful = change_current_db(router_cli_ses->rses_mysql_session,
+	    if (!(change_successful = change_current_db(router_cli_ses->current_db,
 						     router_cli_ses->dbhash,
 						     querybuf)))
 	    {
@@ -3918,7 +3920,8 @@ static bool route_session_write(
 		{
 		    break;
 		}
-
+		if(router_cli_ses->stats.longest_sescmd > 0)
+		    atomic_add(&router_cli_ses->stats.longest_sescmd,-1);
 		tmp = prop;
 		router_cli_ses->rses_properties[RSES_PROP_TYPE_SESCMD] = prop->rses_prop_next;
 		rses_property_done(tmp);

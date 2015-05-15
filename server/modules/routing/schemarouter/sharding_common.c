@@ -110,7 +110,7 @@ void create_error_reply(char* fail_str,DCB* dcb)
  * @return true if new database is set, false if non-existent database was tried
  * to be set
  */
-bool change_current_db(MYSQL_session* mysql_session,
+bool change_current_db(char* current_db,
 			      HASHTABLE* dbhash,
 			      GWBUF* buf)
 {
@@ -125,7 +125,8 @@ bool change_current_db(MYSQL_session* mysql_session,
 	    succp = false;
 	    goto retblock;
 	}
-	skygw_log_write(LOGFILE_TRACE,"change_current_db: INIT_DB with database '%s'",
+	skygw_log_write(LOGFILE_TRACE,
+		 "change_current_db: INIT_DB with database '%s'",
 		 db);
 	/**
 	 * Update the session's active database only if it's in the hashtable.
@@ -139,7 +140,7 @@ bool change_current_db(MYSQL_session* mysql_session,
 	}
 	else
 	{
-	    strncpy(mysql_session->db,db,MYSQL_DATABASE_MAXLEN);
+	    strncpy(current_db,db,MYSQL_DATABASE_MAXLEN);
 	    skygw_log_write(LOGFILE_TRACE,"change_current_db: database is on server: '%s'.",target);
 	    succp = true;
 	    goto retblock;
