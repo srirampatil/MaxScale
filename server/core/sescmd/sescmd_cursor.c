@@ -2,6 +2,38 @@
 #include <strings.h>
 
 /**
+ * Allocate a new session command cursor and link it to a session command list and a DCB.
+ * @param scmdlist The session command list the cursor is to be associated with.
+ * @param dcb DCB the cursor is associated with.
+ * @return 0 on success, -1 when memory allocation fails.
+ */
+int sescmdcursor_allocate(SCMDLIST* scmdlist, DCB* dcb)
+{
+    SCMDCURSOR* cursor;
+    if((cursor = calloc(1,sizeof(SCMDCURSOR))) == NULL)
+    {
+        skygw_log_write(LOGFILE_ERROR,"Error : Memory allocation failed.");
+        return -1;
+    }
+
+    spinlock_init(&cursor->lock);
+    cursor->backend_dcb = dcb;
+    cursor->scmd_list = scmdlist;
+    cursor->current_cmd = scmdlist->first;
+    if(scmdlist->first)
+	cursor->pos = scmdlist->first->pos;
+    else
+	cursor->pos = 0;
+    dcb->cursor = cursor;
+    atomic_add(&scmdlist->n_cursors,1);
+    return 0;
+}
+
+void sescmdcursor_free(SCMDCURSOR* cursor)
+{
+    free(cursor);
+}
+/**
  * Get the session command cursor associated with this DCB.
  * @param scmdlist Session command list
  * @param dcb DCB whose cursor we are looking for

@@ -1868,7 +1868,19 @@ return_succp:
 				router->semantics.min_nreplies =  val;
 				router->semantics.reply_on = SRES_MIN;
 			    }
-			}			
+			}
+			else if(strcmp(options[i], "max_sescmd_history") == 0)
+			{
+			    router->rwsplit_config.rw_max_sescmd_history_size = atoi(value);
+			}
+			else if(strcmp(options[i],"disable_sescmd_history") == 0)
+			{
+			    router->rwsplit_config.disable_sescmd_hist = config_truth_value(value);
+			}
+			else if(strcmp(options[i],"disable_slave_recovery") == 0)
+			{
+			    router->rwsplit_config.disable_slave_recovery = config_truth_value(value);
+			}
                 }
         } /*< for */
 }

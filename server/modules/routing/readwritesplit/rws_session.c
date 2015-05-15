@@ -98,6 +98,7 @@ bool select_connect_backend_servers(
 #endif
 
 	client_rses->router = router;
+	client_rses->client_dcb = session->client;
         /** 
          * If service config has been changed, reload config from service to 
          * router instance first.

@@ -40,7 +40,7 @@
 #include <server.h>
 #include <mysql_client_server_protocol.h>
 #include <openssl/sha.h>
-
+#include <atomic.h>
 /** 
  * Minimum number of backend servers that must respond. If less than this value
  * of backend servers respond, it is considered a failure and the session should
@@ -122,6 +122,7 @@ typedef struct mysql_sescmd_st
   struct mysql_sescmd_st* next; /*< The session command that was executed
                                  * after this one */ 
   unsigned char reply_type; /*< Replied packet type */
+  int pos; /*< Position of the command in the list */
 } SCMD;
 
 typedef struct sescmd_cursor_st
@@ -133,6 +134,7 @@ typedef struct sescmd_cursor_st
   bool scmd_cur_active; /*< True if command is being executed */
   struct sescmd_cursor_st *next; /*< Next cursor */
   SPINLOCK lock; /*< Cursor spinlock */
+  int pos; /*< Current position of the cursor */
 } SCMDCURSOR;
 
 typedef struct sescmd_list_st
@@ -143,11 +145,14 @@ typedef struct sescmd_list_st
   SEMANTICS semantics; /*< The way the session command list behaves */
   list_prop_t properties; /*< Properties of the list */
   SPINLOCK lock;
+  int n_cmd; /*< Amount of session commands added to this list,
+                       *  used for truncating the history.*/
 } SCMDLIST;
 
 SCMDLIST* sescmdlist_allocate();
 void sescmdlist_free(SCMDLIST*);
 bool sescmdlist_add_command (SCMDLIST* , GWBUF* );
+void sescmdlist_remove_cmd(SCMDLIST* list, SCMD* cmd);
 bool sescmdlist_add_dcb (SCMDLIST* , DCB* );
 bool sescmdlist_execute(SCMDCURSOR*);
 bool sescmdlist_is_active(SCMDLIST* , DCB* );

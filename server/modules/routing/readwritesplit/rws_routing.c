@@ -57,6 +57,7 @@ void print_error_packet(
         ROUTER_CLIENT_SES* rses, 
         GWBUF*             buf, 
         DCB*               dcb);
+void truncate_sescmd_hist(ROUTER_CLIENT_SES* rses);
 
 /**
  * Examine the query type, transaction state and routing hints. Find out the
@@ -976,7 +977,27 @@ bool route_session_write(
 		
 		goto return_succp;
 	}
-	
+
+
+	if(router_cli_ses->rses_config.disable_sescmd_hist)
+	{
+	    truncate_sescmd_hist(router_cli_ses);
+	}
+	else if(router_cli_ses->rses_config.rw_max_sescmd_history_size >=
+	 router_cli_ses->rses_sescmd_list->n_cmd)
+	{
+
+	    LOGIF(LT, (skygw_log_write(
+		    LOGFILE_TRACE,
+		    "Router session exceeded session command history limit. "
+		    "Closing router session. <")));
+	    gwbuf_free(querybuf);
+	    rses_end_locked_router_action(router_cli_ses);
+	    DCB* dcb = router_cli_ses->client_dcb;
+	    dcb->func.hangup(dcb);
+
+	    goto return_succp;
+	}
         /** 
          * Add the command to the list of session commands.
          */
@@ -999,8 +1020,40 @@ bool route_session_write(
 return_succp:
 	/** 
 	 * Routing must succeed to all backends that are used.
-	 * There must be at leas one and at most max_nslaves+1 backends.
+	 * There must be at least one and at most max_nslaves+1 backends.
 	 */
 	succp = (nbackends > 0 && nsucc == nbackends && nbackends <= max_nslaves+1);
         return succp;
+}
+
+void truncate_sescmd_hist(ROUTER_CLIENT_SES* rses)
+{
+    rses_property_t*  prop;
+    backend_ref_t*    bref;
+    int n_bref,i;
+    unsigned int pos = 0;
+    bool truncate = true;
+    SCMDCURSOR* cursor;
+
+    bref = rses->rses_backend_ref;
+    n_bref = rses->rses_nbackends;
+
+    while(truncate && rses->rses_sescmd_list->first)
+    {
+	pos = rses->rses_sescmd_list->first->pos;
+	for(i = 0;i < n_bref; i++)
+	{
+	    cursor = dcb_get_sescmdcursor(bref[i].bref_dcb);
+	    if(BREF_IS_IN_USE(&bref[i]) && pos + 1 >= cursor->pos)
+	    {
+		truncate = false;
+		break;
+	    }
+	}
+
+	if(truncate)
+	{
+	    sescmdlist_remove_cmd(rses->rses_sescmd_list,rses->rses_sescmd_list->first);
+	}
+    }
 }

@@ -99,8 +99,9 @@ struct router_client_session {
 #endif
         SPINLOCK         rses_lock;      /*< protects rses_deleted                 */
         ROUTER           *instance;      /*< The router instance for which this is a session */
+        DCB* client_dcb;
         int              rses_versno;    /*< even = no active update, else odd. not used 4/14 */
-        bool             rses_closed;    /*< true when closeSession is called      */
+        int             rses_closed;    /*< true when closeSession is called      */
 	/** Properties listed by their type */
 	rses_property_t* rses_properties[RSES_PROP_TYPE_COUNT];
         backend_ref_t*   rses_master_ref;

@@ -212,6 +212,8 @@ bool sescmdlist_process_replies(
          */
         while (cmd != NULL && replybuf != NULL && rval != false)
         {
+	    /** Update the current position of the cursor */
+	    scur->pos = cmd->pos;
 
 	    command = MYSQL_GET_COMMAND(((unsigned char*)replybuf->start));
 

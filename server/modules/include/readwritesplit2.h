@@ -129,9 +129,11 @@ typedef struct rwsplit_config_st {
         int               rw_max_slave_conn_count;
         select_criteria_t rw_slave_select_criteria;
         int               rw_max_slave_replication_lag;
-	target_t          rw_use_sql_variables_in;	
+	target_t          rw_use_sql_variables_in;
+        int               rw_max_sescmd_history_size;
+        bool disable_sescmd_hist;
+        bool disable_slave_recovery;
 } rwsplit_config_t;
-
 /**
  * The statistics for this router instance
  */

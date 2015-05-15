@@ -1,6 +1,8 @@
 #include <sescmd.h>
 #include <strings.h>
 
+int sescmdcursor_allocate(SCMDLIST* scmdlist, DCB* dcb);
+
 /**
  * Allocates a new session command.
  * @return Pointer to the newly allocated session command or NULL if an error occurred.
@@ -55,6 +57,8 @@ SCMDLIST* sescmdlist_allocate()
     /** Don't set a maximum length on the list */
     list->properties.max_len = 0;
     list->properties.on_mlen_err = DROP_FIRST;
+    list->n_cmd = 0;
+    list->n_cursors = 0;
     return list;
 }
 
@@ -104,7 +108,7 @@ bool sescmdlist_add_command (SCMDLIST* scmdlist, GWBUF* buf)
    cmd->buffer = gwbuf_clone(buf);
    cmd->packet_type = *((unsigned char*)buf->start + 4);
    cmd->reply_sent = false;
-   
+   cmd->pos = atomic_add(&scmdlist->n_cmd,1);
    if(scmdlist->first == NULL)
    {
        scmdlist->first = cmd;
@@ -119,6 +123,38 @@ bool sescmdlist_add_command (SCMDLIST* scmdlist, GWBUF* buf)
    return true;
 }
 
+/**
+ * Remove a command from the list.
+ * @param list List where the command should be removed from
+ * @param cmd Command to remove
+ */
+void sescmdlist_remove_cmd(SCMDLIST* list, SCMD* cmd)
+{
+    SCMD *cur,*prev = NULL;
+
+    cur = list->first;
+
+    while(cur)
+    {
+	if(cur == cmd){
+	    if(prev)
+	    {
+		prev->next = cur->next;
+	    }
+	    else
+	    {
+		list->first = cur->next;
+	    }
+	    sescmd_free(cur);
+	    break;
+	}
+
+	prev = cur;
+	cur = cur->next;
+
+    }
+
+}
 
 /**
  * Add a DCB to the session command list. This allocates a new session command
@@ -130,26 +166,18 @@ bool sescmdlist_add_command (SCMDLIST* scmdlist, GWBUF* buf)
  */
 bool sescmdlist_add_dcb (SCMDLIST* scmdlist, DCB* dcb)
 {
-    SCMDLIST* list = scmdlist;
     SCMDCURSOR* cursor;
     
     if(dcb->cursor != NULL)
     {
 	return true;
     }
-    
-    if((cursor = calloc(1,sizeof(SCMDCURSOR))) == NULL)
+
+    if(sescmdcursor_allocate(scmdlist,dcb))
     {
-        skygw_log_write(LOGFILE_ERROR,"Error : Memory allocation failed.");
-        return false;
+	skygw_log_write(LE,"Failed to allocate session command cursor.");
+	return false;
     }
-    
-    spinlock_init(&cursor->lock);
-    cursor->backend_dcb = dcb;
-    cursor->scmd_list = list;
-    cursor->current_cmd = list->first;
-    dcb->cursor = cursor;
-    atomic_add(&list->n_cursors,1);
     
     return true;
 }
