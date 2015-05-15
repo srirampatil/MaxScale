@@ -193,7 +193,7 @@ DCB	*rval;
 	rval->polloutbusy = 0;
 	rval->writecheck = 0;
         rval->fd = DCBFD_CLOSED;
-
+	rval->cursor = NULL;
 	rval->evq.next = NULL;
 	rval->evq.prev = NULL;
 	rval->evq.pending_events = 0;
