@@ -429,9 +429,7 @@ bool route_single_stmt(
 		 * somehow wrong, or client is sending more queries before 
 		 * previous is received.
 		 */
-		cursor = dcb_get_sescmdcursor(bref->bref_dcb);
-
-		if (sescmd_has_next(cursor))
+		if (sescmdlist_is_active(rses->rses_sescmd_list,target_dcb))
 		{
 			ss_dassert(bref->bref_pending_cmd == NULL);
 			bref->bref_pending_cmd = gwbuf_clone(querybuf);

@@ -169,15 +169,17 @@ bool parse_query (
         }        
         /** Extract query and copy it to different buffer */
         data = (uint8_t*)GWBUF_DATA(querybuf);
-        plen = MYSQL_GET_PACKET_LEN(data);
-        len = plen-1; /*< distract 1 for packet type byte */
-        if (plen == 0 || len < 1 || len >= ~((size_t)0) - 1 || (query_str = (char *)malloc(len+1)) == NULL)
+        len = MYSQL_GET_PACKET_LEN(data);
+
+        if (len < 1 || len >= ~((size_t)0) - 1 || (query_str = (char *)malloc(len+1)) == NULL)
         {
                 /** Free parsing info data */
                 parsing_info_done(pi);
                 succp = false;
                 goto retblock;
         }
+
+        len--;
         memcpy(query_str, &data[5], len);
         memset(&query_str[len], 0, 1);
         parsing_info_set_plain_str(pi, query_str);
