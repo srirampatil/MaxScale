@@ -496,9 +496,9 @@ get_shard_target_name(ROUTER_INSTANCE* router, ROUTER_CLIENT_SES* client, GWBUF*
         
         if(tmp == NULL)
         {
-            rval = (char*) hashtable_fetch(ht, client->rses_mysql_session->db);
+            rval = (char*) hashtable_fetch(ht, client->current_db);
             skygw_log_write(LOGFILE_TRACE,"shardrouter: SHOW TABLES query, current database '%s' on server '%s'",
-                            client->rses_mysql_session->db,rval);
+                            client->current_db,rval);
         }
         else
         {
@@ -528,17 +528,17 @@ get_shard_target_name(ROUTER_INSTANCE* router, ROUTER_CLIENT_SES* client, GWBUF*
     }
     
     
-    if(rval == NULL && !has_dbs && client->rses_mysql_session->db[0] != '\0')
+    if(rval == NULL && !has_dbs && client->current_db[0] != '\0')
     {
         /**
          * If the query contains no explicitly stated databases proceed to
          * check if the session has an active database and if it is sharded.
          */
 
-        rval = (char*) hashtable_fetch(ht, client->rses_mysql_session->db);
+        rval = (char*) hashtable_fetch(ht, client->current_db);
 	if(rval)
 	{
-	    skygw_log_write(LOGFILE_TRACE,"shardrouter: Using active database '%s'",client->rses_mysql_session->db);
+	    skygw_log_write(LOGFILE_TRACE,"shardrouter: Using active database '%s'",client->current_db);
 	}
     }
    
@@ -659,10 +659,10 @@ filterReply(FILTER* instance, void *session, GWBUF *reply)
 		char* target;
 
 		if((target = hashtable_fetch(rses->dbhash,
-					 rses->connect_db)) == NULL)
+					 rses->current_db)) == NULL)
 		{
 		    skygw_log_write_flush(LOGFILE_TRACE,"schemarouter: Connecting to a non-existent database '%s'",
-				     rses->connect_db);
+				     rses->current_db);
 		    rses->rses_closed = true;
 		    if(rses->queue)
 		    {
@@ -679,7 +679,7 @@ filterReply(FILTER* instance, void *session, GWBUF *reply)
 		unsigned int qlen;
 		GWBUF* buffer;
 
-		qlen = strlen(rses->connect_db);
+		qlen = strlen(rses->current_db);
 		buffer = gwbuf_alloc(qlen + 5);
 		if(buffer == NULL)
 		{
@@ -694,7 +694,7 @@ filterReply(FILTER* instance, void *session, GWBUF *reply)
 		gwbuf_set_type(buffer,GWBUF_TYPE_MYSQL);
 		*((unsigned char*)buffer->start + 3) = 0x0;
 		*((unsigned char*)buffer->start + 4) = 0x2;
-		memcpy(buffer->start+5,rses->connect_db,qlen);
+		memcpy(buffer->start+5,rses->current_db,qlen);
 		DCB* dcb = NULL;
 
 		SESSION_ROUTE_QUERY(subsvc->session,buffer);
@@ -739,10 +739,10 @@ filterReply(FILTER* instance, void *session, GWBUF *reply)
     if(rses->init & INIT_USE_DB)
     {
 	skygw_log_write(LOGFILE_DEBUG,"schemarouter: Reply to USE '%s' received for session %p",
-		 rses->connect_db,
+		 rses->current_db,
 		 rses->rses_client_dcb->session);
 	rses->init &= ~INIT_USE_DB;
-	strcpy(rses->rses_mysql_session->db,rses->connect_db);
+	strcpy(rses->current_db,rses->current_db);
 	ss_dassert(rses->init == INIT_READY);
 	if(reply)
 	{
@@ -1081,7 +1081,7 @@ newSession(
     client_rses->routedcb->func.read = fakeQuery;
     client_rses->routedcb->state = DCB_STATE_POLLING;
     client_rses->routedcb->session = session;
-    
+    memset(client_rses->current_db,'\0',MYSQL_DATABASE_MAXLEN+1);
     spinlock_init(&client_rses->rses_lock);
 
     client_rses->subservice = calloc(router->n_services, sizeof(SUBSERVICE*));
@@ -1696,12 +1696,12 @@ routeQuery(ROUTER* instance,
     
     if(packet_type == MYSQL_COM_INIT_DB)
     {
-        if(!(change_successful = change_current_db(router_cli_ses->rses_mysql_session,
+        if(!(change_successful = change_current_db(router_cli_ses->current_db,
 						   router_cli_ses->dbhash,
 						   querybuf)))
         {
 	    extract_database(querybuf,db);
-	    snprintf(errbuf,"Unknown database: %s",db);
+	    sprintf(errbuf,"Unknown database: %s",db);
 	    create_error_reply(errbuf,router_cli_ses->replydcb);
             LOGIF(LE, (skygw_log_write_flush(
                                              LOGFILE_ERROR,
@@ -1732,7 +1732,7 @@ routeQuery(ROUTER* instance,
 
     if(packet_type == MYSQL_COM_INIT_DB)
     {
-        tname = hashtable_fetch(router_cli_ses->dbhash, router_cli_ses->rses_mysql_session->db);
+        tname = hashtable_fetch(router_cli_ses->dbhash, router_cli_ses->current_db);
         route_target = TARGET_NAMED_SERVER;
         
     }
@@ -1753,9 +1753,9 @@ routeQuery(ROUTER* instance,
 
         if((tname == NULL &&
             packet_type != MYSQL_COM_INIT_DB &&
-            router_cli_ses->rses_mysql_session->db[0] == '\0') ||
+            router_cli_ses->current_db[0] == '\0') ||
            packet_type == MYSQL_COM_FIELD_LIST ||
-           (router_cli_ses->rses_mysql_session->db[0] != '\0'))
+           (router_cli_ses->current_db[0] != '\0'))
         {
             /**
              * No current database and no databases in query or
