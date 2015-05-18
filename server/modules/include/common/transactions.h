@@ -7,6 +7,7 @@ typedef struct transaction_state_t{
     bool autocommit_on;
 }TRXSTATE;
 
+void clear_transaction_state(TRXSTATE* state);
 void update_transaction_state(GWBUF* buffer, TRXSTATE* state);
 
 #endif

@@ -35,6 +35,20 @@
 #include <query_classifier.h>
 
 /**
+ * Initialize a TRXSTATE structure.
+ * Autocommit is on and no trannsactions are open.
+ * @param state State to initialize
+ */
+void init_transaction_state(TRXSTATE* state)
+{
+    if(state)
+    {
+	state->autocommit_on = true;
+	state->transaction_active = false;
+    }
+}
+
+/**
  * Update the transaction and autocommit state of a session.
  * If autocommit is disabled or transaction is explicitly started
  * transaction becomes active and master gets all statements until

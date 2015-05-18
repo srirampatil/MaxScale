@@ -16,7 +16,42 @@
  * Copyright MariaDB Corporation Ab 2013-2014
  */
 
+/** Including this shouldn't be required after session command integration */
 #include <shardrouter.h>
+#include <service_connection.h>
+
+/**
+ * Validate the status of the subservice.
+ * @param sub Subservice to validate
+ * @return True if the subservice is valid, false if the session or it's router
+ * are NULL or the session or the service is not in a valid state.
+ */
+bool subsvc_is_valid(SUBSERVICE* sub)
+{
+
+    if(sub->session == NULL ||
+       sub->service->router == NULL)
+    {
+        return false;
+    }
+
+    spinlock_acquire(&sub->session->ses_lock);
+    session_state_t ses_state = sub->session->state;
+    spinlock_release(&sub->session->ses_lock);
+
+    spinlock_acquire(&sub->service->spin);
+    int svc_state = sub->service->state;
+    spinlock_release(&sub->service->spin);
+
+    if(ses_state == SESSION_STATE_ROUTER_READY &&
+       (svc_state != SERVICE_STATE_FAILED ||
+        svc_state != SERVICE_STATE_STOPPED))
+    {
+        return true;
+    }
+
+    return false;
+}
 
 void
 subsvc_set_state(SUBSERVICE* svc,subsvc_state_t state)

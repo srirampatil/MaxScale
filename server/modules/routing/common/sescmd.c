@@ -184,10 +184,7 @@ bool sescmdlist_process_replies(
         SCMDCURSOR* scur,
         GWBUF** rbuf)
 {
-
-	SCMDLIST* list;
         SCMD*  cmd;
-        DCB* master;
 	DCB* dcb;
 	GWBUF* replybuf;
 	bool rval = true;
@@ -199,10 +196,8 @@ bool sescmdlist_process_replies(
 	if(scur == NULL || scur->scmd_list == NULL)
 	    return false;
 
-	list = scur->scmd_list;
 	replybuf = *rbuf;
         cmd =  scur->current_cmd;
-	master = list->semantics.master_dcb;
         dcb = scur->backend_dcb;
         CHK_GWBUF(replybuf);
         

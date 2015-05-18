@@ -118,6 +118,7 @@ typedef struct mysql_sescmd_st
   unsigned char packet_type; /*< packet type */
   bool reply_sent; /*< If the command been sent to the client */
   int n_replied; /*< Number of replies received */
+  int id; /*< Id given to the session command at creation time */
   SPINLOCK lock;
   struct mysql_sescmd_st* next; /*< The session command that was executed
                                  * after this one */ 
@@ -140,6 +141,7 @@ typedef struct sescmd_list_st
   SCMD *first; /*< First session command */
   SCMD *last; /*< Latest session command */
   int n_cursors; /*< Number of session command cursors added */
+  int n_commands; /*< Number of session command cursors added */
   SEMANTICS semantics; /*< The way the session command list behaves */
   list_prop_t properties; /*< Properties of the list */
   SPINLOCK lock;
@@ -148,6 +150,7 @@ typedef struct sescmd_list_st
 SCMDLIST* sescmdlist_allocate();
 void sescmdlist_free(SCMDLIST*);
 bool sescmdlist_add_command (SCMDLIST* , GWBUF* );
+int sescmdlist_delete_command (SCMDLIST* scmdlist, SCMD* target);
 bool sescmdlist_add_dcb (SCMDLIST* , DCB* );
 bool sescmdlist_execute(SCMDCURSOR*);
 bool sescmdlist_is_active(SCMDLIST* , DCB* );

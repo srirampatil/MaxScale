@@ -16,27 +16,8 @@
  * Copyright MariaDB Corporation Ab 2013-2015
  */
 
-#include <my_config.h>
-#include <stdio.h>
-#include <strings.h>
-#include <string.h>
-#include <stdlib.h>
-#include <stdint.h>
-
-#include <router.h>
 #include <shardrouter.h>
-#include <sharding_common.h>
-#include <secrets.h>
-#include <mysql.h>
-#include <skygw_utils.h>
-#include <log_manager.h>
-#include <query_classifier.h>
-#include <dcb.h>
-#include <spinlock.h>
-#include <modinfo.h>
-#include <modutil.h>
-#include <mysql_client_server_protocol.h>
-
+#include <service_connection.h>
 
 MODULE_INFO info = {
     MODULE_API_ROUTER,
@@ -357,39 +338,6 @@ parse_mapping_response(ROUTER_CLIENT_SES* rses, char* target, GWBUF* buf)
    }
 
    return rval;
-}
-
-/**
- * Validate the status of the subservice.
- * @param sub Subservice to validate
- * @return True if the subservice is valid, false if the session or it's router
- * are NULL or the session or the service is not in a valid state.
- */
-bool subsvc_is_valid(SUBSERVICE* sub)
-{
-    
-    if(sub->session == NULL || 
-       sub->service->router == NULL)
-    {
-        return false;
-    }
-    
-    spinlock_acquire(&sub->session->ses_lock);
-    session_state_t ses_state = sub->session->state;
-    spinlock_release(&sub->session->ses_lock);
-
-    spinlock_acquire(&sub->service->spin);
-    int svc_state = sub->service->state;
-    spinlock_release(&sub->service->spin);
-
-    if(ses_state == SESSION_STATE_ROUTER_READY &&
-       (svc_state != SERVICE_STATE_FAILED ||
-        svc_state != SERVICE_STATE_STOPPED))
-    {
-        return true;
-    }
-
-    return false;
 }
 
 /**

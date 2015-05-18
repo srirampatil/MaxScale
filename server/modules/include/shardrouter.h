@@ -29,10 +29,26 @@
  * @endverbatim
  */
 
+#include <my_config.h>
+#include <stdio.h>
+#include <strings.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <router.h>
+#include <sharding_common.h>
+#include <secrets.h>
+#include <mysql.h>
+#include <skygw_utils.h>
+#include <log_manager.h>
+#include <query_classifier.h>
+#include <dcb.h>
+#include <spinlock.h>
+#include <modinfo.h>
+#include <modutil.h>
 #include <dcb.h>
 #include <hashtable.h>
 #include <mysql_client_server_protocol.h>
-
 struct router_instance;
 
 typedef enum {
@@ -139,6 +155,7 @@ typedef struct shardrouter_config_st {
         int               rw_max_slave_conn_count;
 	target_t          rw_use_sql_variables_in;	
 } shard_config_t;
+
 
 typedef enum{
   SUBSVC_ALLOC = 0,
