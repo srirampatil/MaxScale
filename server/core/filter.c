@@ -329,24 +329,9 @@ DOWNSTREAM	*me;
 	if (filter == NULL)
 		return NULL;
 
-	if (filter->obj == NULL)
-	{
-		/* Filter not yet loaded */
-		if ((filter->obj = load_module(filter->module,
-					MODULE_FILTER)) == NULL)
-		{
-			return NULL;
-		}
-	}
+	if(filterLoad(filter) != 0)
+		return NULL;
 
-	if (filter->filter == NULL)
-	{
-		if ((filter->filter = (filter->obj->createInstance)(filter->options,
-					filter->parameters)) == NULL)
-		{
-			return NULL;
-		}
-	}
 	if ((me = (DOWNSTREAM *)calloc(1, sizeof(DOWNSTREAM))) == NULL)
 	{
 		LOGIF(LE, (skygw_log_write_flush(
@@ -408,4 +393,48 @@ UPSTREAM	*me = NULL;
 		filter->obj->setUpstream(me->instance, me->session, upstream);
 	}
 	return me;
+}
+
+/**
+ * Load a filter module and create the filter instance.
+ * @param filter Filter definition to load
+ * @return 0 on success and -1 on error
+ */
+int filterLoad(FILTER_DEF *filter)
+{
+    if (filter->obj == NULL)
+    {
+	/* Filter not yet loaded */
+	if ((filter->obj = load_module(filter->module,
+				 MODULE_FILTER)) == NULL)
+	{
+	    return -1;
+	}
+    }
+
+    if (filter->filter == NULL)
+    {
+	if ((filter->filter = (filter->obj->createInstance)(filter->options,
+		filter->parameters)) == NULL)
+	{
+	    return -1;
+	}
+    }
+    return 0;
+}
+
+int filterUpdate(FILTER_DEF *filter)
+{
+    if(filterLoad(filter) != 0)
+	return -1;
+
+    /** Only update the filter if it supports it */
+    if(filter->obj->updateInstance)
+    {
+	return (filter->obj->updateInstance)(filter->filter,
+		filter->options,
+		filter->parameters);
+    }
+
+    return 0;
 }

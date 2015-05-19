@@ -2410,5 +2410,5 @@ void config_service_update_objects(CONFIG_CONTEXT *obj, CONFIG_CONTEXT *context)
 				}
 			}
 			if (filters && obj->element)
-				serviceSetFilters(obj->element, filters);
+				serviceUpdateFilters(obj->element,context);
 }

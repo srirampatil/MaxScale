@@ -125,6 +125,7 @@ static	void	diagnostic(FILTER *instance, void *fsession, DCB *dcb);
 
 static FILTER_OBJECT MyObject = {
     createInstance,
+    NULL,
     newSession,
     closeSession,
     freeSession,

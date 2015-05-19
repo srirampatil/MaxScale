@@ -69,6 +69,7 @@ static char *version_str = "V1.1.1";
  * The filter entry points
  */
 static	FILTER	*createInstance(char **options, FILTER_PARAMETER **);
+static	int     updateInstance(FILTER *instance, char **options, FILTER_PARAMETER **);
 static	void	*newSession(FILTER *instance, SESSION *session);
 static	void 	closeSession(FILTER *instance, void *session);
 static	void 	freeSession(FILTER *instance, void *session);
@@ -79,6 +80,7 @@ static	void	diagnostic(FILTER *instance, void *fsession, DCB *dcb);
 
 static FILTER_OBJECT MyObject = {
     createInstance,
+    updateInstance,
     newSession,
     closeSession,
     freeSession,
@@ -253,6 +255,21 @@ int		i;
 	}
 	return (FILTER *)my_instance;
 }
+
+/**
+ *
+ * @param instance
+ * @param options
+ * @param params
+ * @return
+ */
+static int
+updateInstance(FILTER *instance, char **options, FILTER_PARAMETER ** params)
+{
+    QLA_INSTANCE *filter = (QLA_INSTANCE *)instance;
+    return 0;
+}
+
 
 /**
  * Associate a new session with this instance of the filter.

@@ -897,10 +897,10 @@ serviceSetTimeout(SERVICE *service, int val)
 
 
 /**
- * Trim whitespace from the from an rear of a string
+ * Trim whitespace from the from and rear of a string
  *
  * @param str		String to trim
- * @return	Trimmed string, chanesg are done in situ
+ * @return	Trimmed string, changes are done in situ
  */
 static char *
 trim(char *str)
@@ -957,6 +957,15 @@ int		n = 0;
 					)));
 			n--;
 		}
+		if(filterLoad(flist[n-1]) != 0)
+		{
+		    LOGIF(LE, (skygw_log_write_flush(
+			    LOGFILE_ERROR,
+			    "Error : Failed to load filter '%s' for service '%s'. This filter will not be used.\n",
+			    trim(ptr), service->name
+			    )));
+		    n--;
+		}
 		flist[n] = NULL;
 		ptr = strtok_r(NULL, "|", &brkt);
 	}
@@ -965,6 +974,90 @@ int		n = 0;
 	service->n_filters = n;
 }
 
+/**
+ * Updates the filters used by the service
+ *
+ * @param service	The service itself
+ */
+void
+serviceUpdateFilters(SERVICE *service, CONFIG_CONTEXT *context)
+{
+    CONFIG_CONTEXT * ptr;
+    CONFIG_PARAMETER* param;
+    CONFIG_PARAMETER* optparam;
+    char* options;
+    char *tok,*saveptr;
+    int i,x;
+
+    for(i = 0;i < service->n_filters;i++)
+    {
+	ptr = context;
+	while(ptr && strcmp(ptr->object,service->filters[i]->name) != 0)
+	{
+	    ptr = ptr->next;
+	}
+
+	if(ptr == NULL)
+	{
+
+	    LOGIF(LE, (skygw_log_write_flush(
+			    LOGFILE_ERROR,
+			    "Error : Failed find filter '%s' for service '%s' in configuration file.\n",
+			    service->filters[i]->name, service->name
+			    )));
+	    continue;
+	}
+
+	optparam = config_get_param(context->parameters,"options");
+
+	if(optparam)
+	{
+	    options = optparam->value;
+	    tok = strtok_r(options,",",&saveptr);
+
+	    if(tok)
+	    {
+		for(x = 0;service->filters[i]->options[x];x++)
+		    free(service->filters[i]->options[x]);
+
+		if(service->filters[i]->options)
+		    service->filters[i]->options[0] = NULL;
+
+		while(tok)
+		{
+		    filterAddOption(service->filters[i],tok);
+		    tok = strtok_r(NULL,",",&saveptr);
+		}
+	    }
+	}
+
+	for(x = 0;service->filters[i]->parameters[x];x++)
+	{
+	    free(service->filters[i]->parameters[x]->name);
+	    free(service->filters[i]->parameters[x]->value);
+	    free(service->filters[i]->parameters[x]);
+	}
+
+	if(service->filters[i]->parameters)
+	    service->filters[i]->parameters[0] = NULL;
+	param = ptr->parameters;
+
+	while(param)
+	{
+	    filterAddParameter(service->filters[i],param->name,param->value);
+	    param = param->next;
+	}
+
+	if(filterUpdate(service->filters[i]) != 0)
+	{
+	    LOGIF(LE, (skygw_log_write_flush(
+			    LOGFILE_ERROR,
+			    "Error : Failed to update filter '%s' for service '%s'.\n",
+			    service->filters[i]->name, service->name
+			    )));
+	}
+    }
+}
 /**
  * Return a named service
  *

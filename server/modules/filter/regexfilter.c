@@ -58,6 +58,7 @@ MODULE_INFO 	info = {
 static char *version_str = "V1.1.0";
 
 static	FILTER	*createInstance(char **options, FILTER_PARAMETER **params);
+static	int	updateInstance(FILTER *instance,char **options, FILTER_PARAMETER **params);
 static	void	*newSession(FILTER *instance, SESSION *session);
 static	void 	closeSession(FILTER *instance, void *session);
 static	void 	freeSession(FILTER *instance, void *session);
@@ -69,6 +70,7 @@ static char	*regex_replace(char *sql, regex_t *re, char *replace);
 
 static FILTER_OBJECT MyObject = {
     createInstance,
+    updateInstance,
     newSession,
     closeSession,
     freeSession,
@@ -249,6 +251,135 @@ char		*logfile = NULL;
 	return (FILTER *)my_instance;
 }
 
+/**
+ * Update a regexfilter instance
+ * @param instance Filter instance
+ * @param options Options for the filter
+ * @param params Filter parameters
+ * @return 0 on success, -1 on error
+ */
+static	int
+updateInstance(FILTER *instance,char **options, FILTER_PARAMETER **params)
+{
+    REGEX_INSTANCE *my_instance = (REGEX_INSTANCE*)instance;
+    FILE* file = NULL;
+    int i, cflags = REG_ICASE;
+    regex_t re;
+    char* match = NULL;
+    char* replace = NULL;
+    char* source = NULL;
+    char* user = NULL;
+    char* logfile = NULL;
+
+
+    for (i = 0; params && params[i]; i++)
+    {
+	if (!strcmp(params[i]->name, "match"))
+	    match = strdup(params[i]->value);
+	else if (!strcmp(params[i]->name, "replace"))
+	    replace = strdup(params[i]->value);
+	else if (!strcmp(params[i]->name, "source"))
+	    source = strdup(params[i]->value);
+	else if (!strcmp(params[i]->name, "user"))
+	    user = strdup(params[i]->value);
+	else if (!strcmp(params[i]->name, "log_trace"))
+	    my_instance->log_trace = config_truth_value(params[i]->value);
+	else if (!strcmp(params[i]->name, "log_file"))
+	    logfile = strdup(params[i]->value);
+	else if (!filter_standard_parameter(params[i]->name))
+	{
+	    LOGIF(LE, (skygw_log_write_flush(
+		    LOGFILE_ERROR,
+					     "regexfilter: Unexpected parameter '%s'.\n",
+					     params[i]->name)));
+	}
+    }
+
+    if (options)
+    {
+	for (i = 0; options[i]; i++)
+	{
+	    if (!strcasecmp(options[i], "ignorecase"))
+	    {
+		cflags |= REG_ICASE;
+	    }
+	    else if (!strcasecmp(options[i], "case"))
+	    {
+		cflags &= ~REG_ICASE;
+	    }
+	    else
+	    {
+		LOGIF(LE, (skygw_log_write_flush(
+			LOGFILE_ERROR,
+						 "regexfilter: unsupported option '%s'.\n",
+						 options[i])));
+	    }
+	}
+    }
+
+    if (match == NULL || replace == NULL)
+    {
+	free(match);
+	free(replace);
+	free(source);
+	free(user);
+	free(logfile);
+	return -1;
+    }
+
+    if (regcomp(&re, match, REG_ICASE))
+    {
+	LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR,
+					 "regexfilter: Invalid regular expression '%s'.\n",
+					 match)));
+	free(match);
+	free(replace);
+	free(source);
+	free(user);
+	free(logfile);
+	return -1;
+    }
+
+    if(logfile != NULL)
+    {
+	if((file = fopen(logfile,"a")) == NULL)
+	{
+	    LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR,
+					     "regexfilter: Failed to open file '%s'.\n",
+					     logfile)));
+	free(match);
+	free(replace);
+	free(source);
+	free(user);
+	free(logfile);
+	return -1;
+	}
+
+	fprintf(file,"\nOpened regex filter log\n");
+	fflush(file);
+    }
+
+    if(my_instance->logfile)
+    {
+	fclose(my_instance->logfile);
+    }
+
+    if(file)
+	my_instance->logfile = file;
+
+    regfree(&my_instance->re);
+    memcpy(&my_instance->re,&re,sizeof(re));
+    free(my_instance->match);
+    free(my_instance->replace);
+    free(my_instance->source);
+    free(my_instance->user);
+    my_instance->match = match;
+    my_instance->replace = replace;
+    my_instance->source = source;
+    my_instance->user = user;
+
+    return 0;
+}
 /**
  * Associate a new session with this instance of the filter.
  *

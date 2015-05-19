@@ -4537,7 +4537,7 @@ static void rwsplit_process_router_options(
         char*             value;
         select_criteria_t c;
         
-        for (i = 0; options[i]; i++)
+        for (i = 0;options && options[i]; i++)
         {
                 if ((value = strchr(options[i], '=')) == NULL)
                 {

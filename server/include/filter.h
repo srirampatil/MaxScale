@@ -52,7 +52,9 @@ typedef struct {
  *
  * The entry points are:
  * 	createInstance		Called by the service to create a new
- * 				instance of the filter 
+ * 				instance of the filter
+ *      updateInstance          Called by the service when a configuration
+ *                              update is done, returns 0 for success
  * 	newSession		Called to create a new user session
  * 				within the filter
  * 	closeSession		Called when a session is closed
@@ -71,6 +73,7 @@ typedef struct {
  */
 typedef struct filter_object {
 	FILTER	*(*createInstance)(char **options, FILTER_PARAMETER **);
+        int    (*updateInstance)(FILTER *instance, char **options, FILTER_PARAMETER **);
 	void	*(*newSession)(FILTER *instance, SESSION *session);
 	void 	(*closeSession)(FILTER *instance, void *fsession);
         void 	(*freeSession)(FILTER *instance, void *fsession);
@@ -86,7 +89,7 @@ typedef struct filter_object {
  * is changed these values must be updated in line with the rules in the
  * file modinfo.h.
  */
-#define FILTER_VERSION	{1, 1, 0}
+#define FILTER_VERSION	{1, 2, 0}
 /**
  * The definition of a filter from the configuration file.
  * This is basically the link between a plugin to load and the
@@ -110,8 +113,10 @@ void		filter_free(FILTER_DEF *);
 FILTER_DEF	*filter_find(char *);
 void		filterAddOption(FILTER_DEF *, char *);
 void		filterAddParameter(FILTER_DEF *, char *, char *);
+int             filterLoad(FILTER_DEF *filter);
 DOWNSTREAM	*filterApply(FILTER_DEF *, SESSION *, DOWNSTREAM *);
 UPSTREAM	*filterUpstream(FILTER_DEF *, void *, UPSTREAM *);
+int             filterUpdate(FILTER_DEF *filter);
 int		filter_standard_parameter(char *);
 void		dprintAllFilters(DCB *);
 void		dprintFilter(DCB *, FILTER_DEF *);

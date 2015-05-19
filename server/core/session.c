@@ -812,7 +812,7 @@ int		i;
 		{
                 	LOGIF(LE, (skygw_log_write_flush(
 				LOGFILE_ERROR,
-				"Service '%s' contians an unresolved filter.\n",
+				"Service '%s' contains an unresolved filter.\n",
 					service->name)));
 			return 0;
 		}
