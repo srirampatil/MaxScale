@@ -53,12 +53,6 @@ typedef enum backend_type_t {
 
 struct router_instance;
 
-#define TARGET_IS_MASTER(t)       (t & TARGET_MASTER)
-#define TARGET_IS_SLAVE(t)        (t & TARGET_SLAVE)
-#define TARGET_IS_NAMED_SERVER(t) (t & TARGET_NAMED_SERVER)
-#define TARGET_IS_ALL(t)          (t & TARGET_ALL)
-#define TARGET_IS_RLAG_MAX(t)     (t & TARGET_RLAG_MAX)
-
 /**
  * This criteria is used when backends are chosen for a router session's use.
  * Backend servers are sorted to ascending order according to the criteria

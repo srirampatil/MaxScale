@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <router.h>
+#include <common/routeresolution.h>
 #include <schemarouter.h>
 #include <sharding_common.h>
 #include <secrets.h>
@@ -1522,6 +1523,10 @@ static int routeQuery(
 	GWBUF*  querybuf = qbuf;
 	char db[MYSQL_DATABASE_MAXLEN + 1];
 	char errbuf[26+MYSQL_DATABASE_MAXLEN];
+	GWBUF *ebuf;
+	DCB *client_dcb;
+	char emsg[1024];
+
         CHK_CLIENT_RSES(router_cli_ses);
 
         /** Dirty read for quick check if router is closed. */
@@ -1529,6 +1534,8 @@ static int routeQuery(
         {
                 rses_is_closed = true;
         }
+
+	client_dcb = router_cli_ses->rses_client_dcb;
 
 	if(router_cli_ses->rses_failed)
 	    failed = true;
@@ -1600,14 +1607,9 @@ static int routeQuery(
 		if(failed)
 		{
 		    /** Currently only unknown databases cause a failure */
-		    GWBUF *ebuf;
-		    DCB *dcb;
-		    char emsg[1024];
-
-		    dcb = router_cli_ses->rses_client_dcb;
 		    sprintf(emsg,"Unknown database '%s'",router_cli_ses->current_db);
 		    ebuf = modutil_create_mysql_err_msg(1,0,1049,"42000",emsg);
-		    dcb->func.write(dcb,ebuf);
+		    client_dcb->func.write(client_dcb,ebuf);
 		}
 		else if (packet_type != MYSQL_COM_QUIT)
                 {
@@ -1838,6 +1840,17 @@ static int routeQuery(
    
 	if (TARGET_IS_ALL(route_target))
 	{
+	    if(TARGET_IS_MASTER(route_target))
+	    {
+		/** This is a session variable modification in a select query
+		 * and it should not succeed. Discard the query and return an error. */
+		while((querybuf = gwbuf_consume(querybuf,gwbuf_length(querybuf))));
+		sprintf(emsg,"User variable modification in SELECT queries is not supported.");
+		ebuf = modutil_create_mysql_err_msg(1,0,1049,"42000",emsg);
+		client_dcb->func.write(client_dcb,ebuf);
+		ret = 1;
+		goto retblock;
+	    }
 		/**
 		 * It is not sure if the session command in question requires
 		 * response. Statement is examined in route_session_write.
