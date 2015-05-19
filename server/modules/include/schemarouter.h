@@ -35,6 +35,10 @@
 #include <common/sescmd.h>
 #include <common/transactions.h>
 #include <common/tmptable.h>
+#include <common/routeresolution.h>
+#include <sharding_common.h>
+#include <string.h>
+
 /**
  * Bitmask values for the router session's initialization. These values are used
  * to prevent responses from internal commands being forwarded to the client.

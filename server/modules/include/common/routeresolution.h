@@ -37,6 +37,7 @@ typedef enum {
 #define TARGET_IS_SLAVE(t)        (t & TARGET_SLAVE)
 #define TARGET_IS_NAMED_SERVER(t) (t & TARGET_NAMED_SERVER)
 #define TARGET_IS_ALL(t)          (t & TARGET_ALL)
+#define TARGET_IS_ANY(t)          (t & TARGET_ANY)
 #define TARGET_IS_RLAG_MAX(t)     (t & TARGET_RLAG_MAX)
 
 int hash_query_by_table(GWBUF* query, int nodes);

@@ -15,26 +15,7 @@
  *
  * Copyright MariaDB Corporation Ab 2013-2014
  */
-#include <my_config.h>
-#include <stdio.h>
-#include <strings.h>
-#include <string.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <router.h>
-#include <common/routeresolution.h>
 #include <schemarouter.h>
-#include <sharding_common.h>
-#include <secrets.h>
-#include <mysql.h>
-#include <skygw_utils.h>
-#include <log_manager.h>
-#include <query_classifier.h>
-#include <dcb.h>
-#include <spinlock.h>
-#include <modinfo.h>
-#include <modutil.h>
-#include <mysql_client_server_protocol.h>
 
 MODULE_INFO 	info = {
 	MODULE_API_ROUTER,
@@ -42,7 +23,6 @@ MODULE_INFO 	info = {
 	ROUTER_VERSION,
 	"A database sharding router for simple sharding"
 };
-
 
 /** Defined in log_manager.cc */
 extern int            lm_enabled_logfiles_bitmask;
