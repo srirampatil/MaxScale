@@ -98,6 +98,7 @@ static char* required_rules[] = {
  * The filter entry points
  */
 static	FILTER	*createInstance(char **options, FILTER_PARAMETER **);
+static	int	updateInstance(FILTER *instance, char **options, FILTER_PARAMETER **);
 static	void	*newSession(FILTER *instance, SESSION *session);
 static	void 	closeSession(FILTER *instance, void *session);
 static	void 	freeSession(FILTER *instance, void *session);
@@ -107,7 +108,7 @@ static	void	diagnostic(FILTER *instance, void *fsession, DCB *dcb);
 
 static FILTER_OBJECT MyObject = {
     createInstance,
-    NULL,
+    updateInstance,
 	newSession,
 	closeSession,
 	freeSession,
@@ -302,7 +303,7 @@ void* rlistdup(void* fval)
 
 }
 
-static void* hrulefree(void* fval)
+static void* rulelist_free(void* fval)
 {
 	RULELIST *ptr = (RULELIST*)fval;
 	while(ptr){
@@ -317,15 +318,61 @@ static void* huserfree(void* fval)
 {
     USER* value = (USER*)fval;
 
-    hrulefree(value->rules_and);
-    hrulefree(value->rules_or);
-    hrulefree(value->rules_strict_and);
+    rulelist_free(value->rules_and);
+    rulelist_free(value->rules_or);
+    rulelist_free(value->rules_strict_and);
     free(value->qs_limit);
     free(value->name);
     free(value);
     return NULL;
 }
 
+/**
+ * Free a rule and its associated data depending on its type.
+ * @param rule Rule to free
+ */
+void rule_free(RULE* rule)
+{
+    STRLINK *link,*tmp;
+    TIMERANGE* tr;
+    regex_t* re;
+
+    switch(rule->type)
+    {
+    case RT_COLUMN:
+	link = (STRLINK*)rule->data;
+	while(link)
+	{
+	    tmp = link;
+	    link = link->next;
+	    free(tmp->value);
+	    free(tmp);
+	}
+	break;
+
+    case RT_THROTTLE:
+	free(rule->data);
+	break;
+
+    case RT_REGEX:
+	re = (regex_t*)rule->data;
+	regfree(re);
+	free(re);
+	break;
+
+    default:
+	break;
+    }
+
+    while(rule->active)
+    {
+	tr = rule->active;
+	rule->active = rule->active->next;
+	free(tr);
+    }
+    free(rule->name);
+    free(rule);
+}
 /**
  * Strips the single or double quotes from a string.
  * This function modifies the passed string.
@@ -1296,6 +1343,95 @@ bool is_comment(char* str)
 }
 
 /**
+ * Free the list of rules in the filter instance.
+ * @param instance Filter instance
+ * @return 0 on success and -1 on error
+ */
+void free_rules(FW_INSTANCE* instance)
+{
+    RULELIST* rulelist;
+
+    rulelist = instance->rules;
+
+    while(instance->rules)
+    {
+	rulelist = instance->rules;
+	instance->rules = instance->rules->next;
+	rule_free(rulelist->rule);
+	free(rulelist);
+    }
+}
+
+/**
+ * Parse a rule file.
+ * This generates the filter instance's rules and users.
+ * @param my_instance Filter instance
+ * @param filename Name of the file to parse
+ * @return 0 on success and -1 on error
+ */
+int parse_rulefile(FW_INSTANCE* my_instance,char* filename)
+{
+    FILE* file;
+    char* nl;
+    char buffer[2048];
+    bool file_empty = true;
+    int rval = 0;
+
+    if((file = fopen(filename,"rb")) == NULL ){
+	skygw_log_write(
+		LOGFILE_ERROR,
+		"Error: Failed to open rule file '%s': %d %s",
+		 filename,errno,strerror(errno));
+	return -1;
+    }
+
+    while(!feof(file))
+    {
+
+        if(fgets(buffer,2048,file) == NULL){
+            if(ferror(file)){
+                skygw_log_write(
+			LOGFILE_ERROR,
+			"Error: Failed to read rule file '%s': %d %s",
+		        filename,errno,strerror(errno));
+                fclose(file);
+                return -1;
+            }
+
+            if(feof(file)){
+                break;
+            }
+        }
+
+        if((nl = strchr(buffer,'\n')) != NULL && ((char*)nl - (char*)buffer) < 2048){
+            *nl = '\0';
+        }
+
+	if(strnlen(buffer,2048) < 1 || is_comment(buffer))
+	{
+	    continue;
+	}
+
+	file_empty = false;
+
+        if(!parse_rule(buffer,my_instance))
+	{
+	    rval = -1;
+	    break;
+	}
+    }
+
+    if(file_empty)
+    {
+	skygw_log_write(LOGFILE_ERROR,"dbfwfilter: File is empty: %s",filename);
+	rval = -1;
+    }
+
+    fclose(file);
+    return rval;
+}
+
+/**
  * Create an instance of the filter for a particular service
  * within MaxScale.
  * 
@@ -1310,8 +1446,7 @@ createInstance(char **options, FILTER_PARAMETER **params)
   	int i;
 	HASHTABLE* ht;
 	STRLINK *ptr,*tmp;
-	char *filename = NULL, *nl;
-	char buffer[2048];
+	char *filename = NULL;
 	FILE* file;
 	bool err = false;
 
@@ -1320,7 +1455,28 @@ createInstance(char **options, FILTER_PARAMETER **params)
             skygw_log_write(LOGFILE_ERROR, "Memory allocation for firewall filter failed.");
 		return NULL;
 	}
-	
+
+	for(i = 0;params[i];i++){
+	    if(strcmp(params[i]->name, "rules") == 0)
+		filename = strdup(params[i]->value);
+	}
+
+	if(options)
+	{
+	    for(i = 0;options[i];i++)
+	    {
+		if(strcmp(options[i],"ignorecase") == 0)
+		{
+		    my_instance->regflags |= REG_ICASE;
+		}
+	    }
+	}
+
+	if(filename == NULL)
+	{
+	    skygw_log_write(LE,"Error: No 'rules' parameter found.");
+	}
+
 	spinlock_init(my_instance->lock);
 
 	if((ht = hashtable_alloc(100, hashkeyfun, hashcmpfun)) == NULL){
@@ -1335,91 +1491,13 @@ createInstance(char **options, FILTER_PARAMETER **params)
 	my_instance->def_op = true;
 	my_instance->userstrings = NULL;
 	my_instance->regflags = 0;
-	
-	for(i = 0;params[i];i++){
-	    if(strcmp(params[i]->name, "rules") == 0){
-		if(filename)
-		    free(filename);
-		filename = strdup(params[i]->value);
-	    }
-	}
 
-	if(options)
+	if(parse_rulefile(my_instance,filename) != 0)
 	{
-	    for(i = 0;options[i];i++)
-	    {
-		if(strcmp(options[i],"ignorecase") == 0)
-		{
-		    my_instance->regflags |= REG_ICASE;
-		}
-	    }
-	}
-        
-        if(filename == NULL)
-        {
-            skygw_log_write(LOGFILE_ERROR, "Unable to find rule file for firewall filter. Please provide the path with"
-                    " rules=<path to file>");
-            hashtable_free(my_instance->htable);
-            free(my_instance);
-            return NULL;
-        }
-        
-	if((file = fopen(filename,"rb")) == NULL ){
-            skygw_log_write(LOGFILE_ERROR, "Error while opening rule file for firewall filter.");
-            hashtable_free(my_instance->htable);
-            free(my_instance);
-            free(filename);
-            return NULL;
-	}
-
-
-	bool file_empty = true;
-
-	while(!feof(file))
-    {
-
-        if(fgets(buffer,2048,file) == NULL){
-            if(ferror(file)){
-                skygw_log_write(LOGFILE_ERROR, "Error while reading rule file for firewall filter.");
-                fclose(file);
-                hashtable_free(my_instance->htable);
-                free(my_instance);
-                return NULL;
-            }
-				
-            if(feof(file)){
-                break;
-            }
-        }	
-        
-        if((nl = strchr(buffer,'\n')) != NULL && ((char*)nl - (char*)buffer) < 2048){
-            *nl = '\0';
-        }
-        
-	if(strnlen(buffer,2048) < 1 || is_comment(buffer))
-	{
-	    continue;
-	}
-
-	file_empty = false;
-
-        if(!parse_rule(buffer,my_instance))
-	{
-	    fclose(file);
 	    err = true;
-	    goto retblock;
-	}
-    }
-
-	if(file_empty)
-	{
-	    skygw_log_write(LOGFILE_ERROR,"dbfwfilter: File is empty: %s");
 	    free(filename);
-	    err = true;
 	    goto retblock;
 	}
-
-	fclose(file);
 	free(filename);
 
 	/**Apply the rules to users*/
@@ -1449,7 +1527,7 @@ createInstance(char **options, FILTER_PARAMETER **params)
 
 	if(err)
 	{
-	    hrulefree(my_instance->rules);
+	    rulelist_free(my_instance->rules);
 	    hashtable_free(my_instance->htable);
             free(my_instance);
 	    my_instance = NULL;
@@ -1458,8 +1536,105 @@ createInstance(char **options, FILTER_PARAMETER **params)
 	return (FILTER *)my_instance;
 }
 
+/**
+ * Update the filter instance.
+ * @param instance Filter instance
+ * @param options Filter options
+ * @param params Filter parameters
+ * @return 0 on success and -1 on error
+ */
+static int
+updateInstance(FILTER *instance, char **options, FILTER_PARAMETER **params)
+{
+    FW_INSTANCE *my_instance = (FW_INSTANCE*)instance;
+    FW_INSTANCE *new_instance;
+    int i,rval = 0;
+    HASHTABLE* ht;
+    STRLINK *ptr,*tmp;
+    char *filename = NULL;
 
+    if((new_instance = (FW_INSTANCE*)createInstance(options,params)) == NULL)
+    {
+	skygw_log_write(LE,"Error: Failed to update filter.");
+	return -1;
+    }
 
+    hashtable_free(my_instance->htable);
+    free_rules(my_instance);
+    memcpy(my_instance,new_instance,sizeof(FW_INSTANCE));
+    free(new_instance);
+    return 0;
+
+    for(i = 0;params[i];i++){
+	if(strcmp(params[i]->name, "rules") == 0){
+	    filename = strdup(params[i]->value);
+	}
+    }
+
+    if(filename == NULL)
+    {
+	skygw_log_write(LE,"Error: No 'rules' parameter found for dbfwfilter.");
+	return -1;
+    }
+
+    if(options)
+    {
+	for(i = 0;options[i];i++)
+	{
+	    if(strcmp(options[i],"ignorecase") == 0)
+	    {
+		my_instance->regflags |= REG_ICASE;
+	    }
+	}
+    }
+
+    hashtable_free(my_instance->htable);
+    free_rules(my_instance);
+
+    if((ht = hashtable_alloc(100, hashkeyfun, hashcmpfun)) == NULL){
+	skygw_log_write(LOGFILE_ERROR, "Error: Allocation of hashtable failed.");
+	rval = -1;
+	goto retblock;
+    }
+
+    hashtable_memory_fns(ht,(HASHMEMORYFN)strdup,NULL,(HASHMEMORYFN)free,huserfree);
+    my_instance->htable = ht;
+    my_instance->def_op = true;
+    my_instance->userstrings = NULL;
+    my_instance->regflags = 0;
+
+    if(parse_rulefile(my_instance,filename) != 0)
+    {
+	rval = -1;
+	goto retblock;
+    }
+
+    /**Apply the rules to users*/
+    ptr = my_instance->userstrings;
+
+    if(ptr == NULL)
+    {
+	skygw_log_write(LOGFILE_ERROR,"dbfwfilter: No 'users' line found.");
+	rval = -1;
+	goto retblock;
+    }
+
+    while(ptr){
+
+	if(!link_rules(ptr->value,my_instance))
+	{
+	    skygw_log_write(LOGFILE_ERROR,"dbfwfilter: Failed to parse rule: %s",ptr->value);
+	    rval = -1;
+	}
+	tmp = ptr;
+	ptr = ptr->next;
+	free(tmp->value);
+	free(tmp);
+    }
+    retblock:
+    free(filename);
+    return rval;
+}
 
 /**
  * Associate a new session with this instance of the filter.
