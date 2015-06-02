@@ -36,6 +36,8 @@
 #include <atomic.h>
 #include <query_classifier.h>
 #include <spinlock.h>
+#include <mysql_client_server_protocol.h>
+#include <sys/stat.h>
 
 /** Defined in log_manager.cc */
 extern int            lm_enabled_logfiles_bitmask;
@@ -90,9 +92,6 @@ typedef struct {
     
     regex_t re;     /*  Compiled regex text */
 
-    FILE *fp;
-    char *filebase;
-
 } BGD_INSTANCE;
 
 
@@ -104,6 +103,7 @@ typedef struct {
  */
 typedef struct {
     DOWNSTREAM down;
+    char *current_db;
     int active;
 } BGD_SESSION;
 
@@ -149,11 +149,51 @@ GetModuleObject()
 	return &MyObject;
 }
 
+
 /* 
- * ===  FUNCTION  ===============================LOGIF(LD, (skygw_log_write_flush(
-				LOGFILE_DEBUG,
-				"bgdfilter: %s.\n",
-				skygw_get_canonical(queue))));=======================================
+ * ===  FUNCTION  ======================================================================
+ *         Name:  create_dir
+ *  Description:  Create directory at path. Return zero if successful else error number.
+ * =====================================================================================
+ */
+static int create_dir(char *path)
+{
+    struct stat st;
+
+    if(stat(path, &st) == 0)
+    {
+        if(S_ISDIR(st.st_mode))
+        {
+            LOGIF(LD, (skygw_log_write_flush(
+				    LOGFILE_DEBUG,
+				    "bgdfilter: '%s' directory already exists.\n",
+				    path)));
+
+            return 0;
+        }
+        else
+        {
+            LOGIF(LD, (skygw_log_write_flush(
+				    LOGFILE_DEBUG,
+				    "bgdfilter: '%s' exists, but not a directory.\n",
+				    path)));
+
+            return EEXIST;
+        }
+
+    }
+    else if(mkdir(path, 0644) != 0)
+    {
+        int err = errno;
+        if(err != EEXIST)
+            return err;
+    }
+
+    return 0;
+}
+
+/* 
+ * ===  FUNCTION  ======================================================================
  *         Name:  createInstance
  *  Description:  
  * =====================================================================================
@@ -162,6 +202,7 @@ static FILTER *
 createInstance(char **options, FILTER_PARAMETER **params)
 {
     BGD_INSTANCE * bgd_instance;
+    int dir_ret;
 
     if((bgd_instance = (BGD_INSTANCE *)calloc(1, sizeof(BGD_INSTANCE))) == NULL)
         return NULL;
@@ -169,20 +210,30 @@ createInstance(char **options, FILTER_PARAMETER **params)
     bgd_instance->format = NULL;
     bgd_instance->path = NULL;
     bgd_instance->match = NULL;
-    bgd_instance->filebase = NULL;
-    bgd_instance->fp = NULL;
 
     if(options)
-        bgd_instance->filebase = strdup(options[0]);
+        bgd_instance->path = strdup(options[0]);
     else
-        bgd_instance->filebase = strdup("/tmp/bgd");
-
-    bgd_instance->fp = fopen(bgd_instance->filebase, "w+");
+        bgd_instance->path = strdup("/tmp/bgd");
 
     LOGIF(LD, (skygw_log_write_flush(
 				LOGFILE_DEBUG,
 				"bgdfilter: %s.\n",
 				__func__)));
+
+    if((dir_ret = create_dir(bgd_instance->path)) != 0)
+    {
+        LOGIF(LE, (skygw_log_write_flush(
+				LOGFILE_DEBUG,
+				"bgdfilter: '%s' %s.\n",
+                bgd_instance->path,
+				strerror(dir_ret))));
+
+        free(bgd_instance->path);
+        free(bgd_instance);
+
+        return NULL;
+    }
 
     return (FILTER *)bgd_instance;
 }
@@ -197,6 +248,7 @@ static void *
 newSession(FILTER *instance, SESSION *session)
 {
     BGD_SESSION *bgd_session;
+    MYSQL_session *ses_data = (MYSQL_session *)session->data;
 
     if((bgd_session = (BGD_SESSION *)calloc(1, sizeof(BGD_SESSION))) == NULL)
         return NULL;
@@ -205,6 +257,9 @@ newSession(FILTER *instance, SESSION *session)
 				LOGFILE_DEBUG,
 				"bgdfilter: %s.\n",
 				__func__)));
+
+    
+    bgd_session->current_db = strdup(ses_data->db);
 
     return bgd_session;
 }
@@ -223,10 +278,6 @@ closeSession(FILTER *instance, void *session)
 				"bgdfilter: %s.\n",
 				__func__)));
 
-    BGD_INSTANCE *bgd_instance = (BGD_INSTANCE *)instance;
-    if(bgd_instance->fp != NULL)
-        fclose(bgd_instance->fp);
-
     return;
 }
 
@@ -244,7 +295,11 @@ freeSession(FILTER *instance, void *session)
 				"bgdfilter: %s.\n",
 				__func__)));
 
-    free(session);
+    BGD_SESSION *bgd_session = (BGD_SESSION *)session;
+    if(bgd_session->current_db != NULL)
+        free(bgd_session->current_db);
+
+    free(bgd_session);
 }
 
 /* 
@@ -276,9 +331,11 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
 {
     BGD_INSTANCE *bgd_instance = (BGD_INSTANCE *)instance;
     BGD_SESSION *bgd_session = (BGD_SESSION *)fsession;
-    
-    parse_query(queue);
 
+    int number_of_table_names, number_of_db_names;
+    char **table_names, **db_names;
+    bool success = false;
+    
     LOGIF(LD, (skygw_log_write_flush(
 				LOGFILE_DEBUG,
 				"bgdfilter: %s.\n",
@@ -286,23 +343,37 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
 
     if(modutil_is_SQL(queue))
     {
-        if(query_classifier_get_operation(queue) == QUERY_OP_INSERT)
-        {
-            LOGIF(LD, (skygw_log_write_flush(
-				        LOGFILE_DEBUG,
-				        "bgdfilter: insert query")));
+        if(!query_is_parsed(queue))
+            success = parse_query(queue);
 
-            fprintf(bgd_instance->fp, "%s\n", modutil_get_SQL(queue));
-            fflush(bgd_instance->fp);
-        }
-        else
+        if(!success)
         {
-            LOGIF(LD, (skygw_log_write_flush(
-				        LOGFILE_DEBUG,
-				        "bgdfilter: non-insert query")));
+            skygw_log_write(LOGFILE_ERROR,"Error: Parsing query failed.");
+            goto end;
+        }
+
+        switch(query_classifier_get_operation(queue))
+        {
+            case QUERY_OP_INSERT:              
+                LOGIF(LD, (skygw_log_write_flush(
+				            LOGFILE_DEBUG,
+    				        "bgdfilter: insert query")));
+
+                /* table_names = skygw_get_table_names(queue, &number_of_table_names, TRUE);
+                db_names = skygw_get_database_names(queue, &number_of_db_names);
+
+                if(number_of_db_names > 0)
+                    fprintf(bgd_instance->fp, "%s\n", db_names[0]);
+                else
+                    fprintf(bgd_instance->fp, "%s\n", table_names[0]);
+
+                fflush(bgd_instance->fp);
+                   */
+                break;
         }
     } 
 
+end:
     return bgd_session->down.routeQuery(bgd_session->down.instance, 
                     bgd_session->down.session, queue);
 }
