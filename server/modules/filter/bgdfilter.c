@@ -1,5 +1,4 @@
 /*
- * =====================================================================================
  *
  *       Filename:  bgdfilter.c
  *
@@ -18,7 +17,6 @@
  *         Author:  Sriram Patil
  *   Organization:  
  *
- * =====================================================================================
  */
 
 #include <stdio.h>
@@ -38,6 +36,7 @@
 #include <spinlock.h>
 #include <mysql_client_server_protocol.h>
 #include <sys/stat.h>
+#include <hashtable.h>
 
 /** Defined in log_manager.cc */
 extern int            lm_enabled_logfiles_bitmask;
@@ -80,26 +79,30 @@ static FILTER_OBJECT MyObject = {
 
 
 /*
- * =====================================================================================
  *       struct:  BGD_INSTANCE
  *  Description:  bgdfilter instance.
- * =====================================================================================
  */
-typedef struct {
+
+typedef struct bgd_instance BGD_INSTANCE;
+
+struct bgd_instance {
     char *format;   /* Storage format JSON or XML (Default: JSON */
     char *path;     /* Path to a folder where to store all data files */
     char *match;    /* Mandatory regex to match against table names */
     
     regex_t re;     /*  Compiled regex text */
 
-} BGD_INSTANCE;
+    HASHTABLE *fp_htable;   /* Hash table mapping from file name to file pointer */
 
+    BGD_INSTANCE *next;
+};
+
+static SPINLOCK instances_lock;
+static BGD_INSTANCE *instances_list;
 
 /*
- * =====================================================================================
  *       struct:  BGD_SESSION
  *  Description:  bgdfilter session
- * =====================================================================================
  */
 typedef struct {
     DOWNSTREAM down;
@@ -107,13 +110,43 @@ typedef struct {
     int active;
 } BGD_SESSION;
 
+/*
+ * Hash function for fp_htable in BGD_INSTANCE
+ *
+ * @param key   null-terminated string to be hashed.
+ * @return hash value
+ */
+static int fp_hashfn(void *key)
+{
+    if(key == NULL)
+        return 0;
+
+    int hash = 0,c = 0;
+    char* ptr = key;
+    while((c = *ptr++))
+        hash = c + (hash << 6) + (hash << 16) - hash;
+
+    return hash;
+}
+
+/*
+ * Comparison function for fp_htable in BGD_INSTANCE
+ *
+ * @param key1  first null-terminated string to be compared
+ * @param key2  second null-terminated string to be compared
+ * @return zero if equal, non-zero otherwise
+ */
+static int fp_cmpfn(void *key1, void *key2)
+{
+    return strcmp((char *)key1, (char *)key2);
+}
+
 /**
  * Implementation of the mandatory version entry point
  *
  * @return version string of the module
  */
-char *
-version()
+char *version()
 {
 	return version_str;
 }
@@ -122,13 +155,15 @@ version()
  * The module initialisation routine, called when the module
  * is first loaded.
  */
-void
-ModuleInit()
+void ModuleInit()
 {
     LOGIF(LD, (skygw_log_write_flush(
 				LOGFILE_DEBUG,
 				"bgdfilter: %s.\n",
 				__func__)));
+
+    spinlock_init(&instances_lock);
+    instances_list = NULL;
 }
 
 /**
@@ -139,8 +174,7 @@ ModuleInit()
  *
  * @return The module object
  */
-FILTER_OBJECT *
-GetModuleObject()
+FILTER_OBJECT *GetModuleObject()
 {
     LOGIF(LD, (skygw_log_write_flush(
 				LOGFILE_DEBUG,
@@ -149,19 +183,41 @@ GetModuleObject()
 	return &MyObject;
 }
 
+/*
+ * Opens a file given folder and file names
+ *
+ * @param folder_path   parent forlder of the file
+ * @param file_name     name of the file
+ * @param mode          mode in which the file should be opened
+ */
+static FILE *open_file(char *folder_path, char *file_name, char *mode)
+{
+    char *file_path = (char *)calloc(1, strlen(folder_path) + strlen(file_name)
+            + 1 /* for separator / */
+            + 1 /* for null termination */
+            );
+
+    sprintf(file_path, "%s/%s", folder_path, file_name);
+    FILE *fp = fopen(file_path, mode);
+
+    free(file_path);
+    return fp;
+}
 
 /* 
- * ===  FUNCTION  ======================================================================
- *         Name:  create_dir
- *  Description:  Create directory at path. Return zero if successful else error number.
- * =====================================================================================
+ * Create directory with all the error checking
+ *
+ * @param path  path of directory to be created.
+ * @return zero if successful else errno value set by system calls.
  */
 static int create_dir(char *path)
 {
     struct stat st;
 
+    // Checking if the directory already exists
     if(stat(path, &st) == 0)
     {
+        // Checking if the exising file is a directory
         if(S_ISDIR(st.st_mode))
         {
             LOGIF(LD, (skygw_log_write_flush(
@@ -173,8 +229,8 @@ static int create_dir(char *path)
         }
         else
         {
-            LOGIF(LD, (skygw_log_write_flush(
-				    LOGFILE_DEBUG,
+            LOGIF(LE, (skygw_log_write_flush(
+				    LOGFILE_ERROR,
 				    "bgdfilter: '%s' exists, but not a directory.\n",
 				    path)));
 
@@ -193,20 +249,31 @@ static int create_dir(char *path)
 }
 
 /* 
- * ===  FUNCTION  ======================================================================
  *         Name:  createInstance
  *  Description:  
- * =====================================================================================
  */
-static FILTER *
-createInstance(char **options, FILTER_PARAMETER **params)
+static FILTER *createInstance(char **options, FILTER_PARAMETER **params)
 {
     BGD_INSTANCE * bgd_instance;
+    HASHTABLE *ht;
     int dir_ret;
 
     if((bgd_instance = (BGD_INSTANCE *)calloc(1, sizeof(BGD_INSTANCE))) == NULL)
         return NULL;
 
+    // Hash table initialization
+    if((ht = hashtable_alloc(100, fp_hashfn, fp_cmpfn)) == NULL)
+    {
+        LOGIF(LE, (skygw_log_write_flush(
+				LOGFILE_ERROR,
+				"bgdfilter: Could not allocate hashtable")));
+        free(bgd_instance);
+        return NULL;
+    }
+
+    hashtable_memory_fns(ht, (HASHMEMORYFN)strdup, NULL, (HASHMEMORYFN)free, NULL);
+
+    bgd_instance->fp_htable = ht;
     bgd_instance->format = NULL;
     bgd_instance->path = NULL;
     bgd_instance->match = NULL;
@@ -224,7 +291,7 @@ createInstance(char **options, FILTER_PARAMETER **params)
     if((dir_ret = create_dir(bgd_instance->path)) != 0)
     {
         LOGIF(LE, (skygw_log_write_flush(
-				LOGFILE_DEBUG,
+				LOGFILE_ERROR,
 				"bgdfilter: '%s' %s.\n",
                 bgd_instance->path,
 				strerror(dir_ret))));
@@ -235,17 +302,19 @@ createInstance(char **options, FILTER_PARAMETER **params)
         return NULL;
     }
 
+    spinlock_acquire(&instances_lock);
+    bgd_instance->next = instances_list;
+    instances_list = bgd_instance;
+    spinlock_release(&instances_lock);
+
     return (FILTER *)bgd_instance;
 }
 
 /* 
- * ===  FUNCTION  ======================================================================
  *         Name:  newSession
  *  Description:  
- * =====================================================================================
  */
-static void *
-newSession(FILTER *instance, SESSION *session)
+static void *newSession(FILTER *instance, SESSION *session)
 {
     BGD_SESSION *bgd_session;
     MYSQL_session *ses_data = (MYSQL_session *)session->data;
@@ -265,30 +334,24 @@ newSession(FILTER *instance, SESSION *session)
 }
 
 /* 
- * ===  FUNCTION  ======================================================================
  *         Name:  closeSession
  *  Description:  
- * =====================================================================================
  */
-static void 
-closeSession(FILTER *instance, void *session)
+static void closeSession(FILTER *instance, void *session)
 {
     LOGIF(LD, (skygw_log_write_flush(
 				LOGFILE_DEBUG,
 				"bgdfilter: %s.\n",
 				__func__)));
-
+ 
     return;
 }
 
 /* 
- * ===  FUNCTION  ======================================================================
  *         Name:  freeSession
  *  Description:  
- * =====================================================================================
  */
-static void 
-freeSession(FILTER *instance, void *session)
+static void freeSession(FILTER *instance, void *session)
 {
     LOGIF(LD, (skygw_log_write_flush(
 				LOGFILE_DEBUG,
@@ -303,13 +366,11 @@ freeSession(FILTER *instance, void *session)
 }
 
 /* 
- * ===  FUNCTION  ======================================================================
  *         Name:  setDownstream
  *  Description:  
- * =====================================================================================
  */
-static void	
-setDownstream(FILTER *instance, void *fsession, DOWNSTREAM *downstream)
+static void	setDownstream(FILTER *instance, void *fsession, 
+        DOWNSTREAM *downstream)
 {
     LOGIF(LD, (skygw_log_write_flush(
 				LOGFILE_DEBUG,
@@ -321,13 +382,10 @@ setDownstream(FILTER *instance, void *fsession, DOWNSTREAM *downstream)
 }
 
 /* 
- * ===  FUNCTION  ======================================================================
  *         Name:  routeQuery
  *  Description:  
- * =====================================================================================
  */
-static int	
-routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
+static int routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
 {
     BGD_INSTANCE *bgd_instance = (BGD_INSTANCE *)instance;
     BGD_SESSION *bgd_session = (BGD_SESSION *)fsession;
@@ -335,6 +393,7 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
     int number_of_table_names, number_of_db_names;
     char **table_names, **db_names;
     bool success = false;
+    char *file_name = NULL;
     
     LOGIF(LD, (skygw_log_write_flush(
 				LOGFILE_DEBUG,
@@ -354,13 +413,44 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
 
         switch(query_classifier_get_operation(queue))
         {
-            case QUERY_OP_INSERT:              
-                LOGIF(LD, (skygw_log_write_flush(
-				            LOGFILE_DEBUG,
-    				        "bgdfilter: insert query")));
+        case QUERY_OP_INSERT:              
+            LOGIF(LD, (skygw_log_write_flush(
+                    LOGFILE_DEBUG, 
+                    "bgdfilter: insert query")));
 
-                /* table_names = skygw_get_table_names(queue, &number_of_table_names, TRUE);
-                db_names = skygw_get_database_names(queue, &number_of_db_names);
+            table_names = skygw_get_table_names(queue, &number_of_table_names, TRUE);
+            if(number_of_table_names == 0)
+                goto end;
+
+            file_name = (char *)calloc(1, strlen(bgd_session->current_db)
+                    + strlen(table_names[0]) + 4 /* for "data" */
+                    + 2 /* for two . */
+                    + 1 /* for null termination */
+                    );
+
+            sprintf(file_name, "%s.%s.data", bgd_session->current_db, 
+                        table_names[0]);
+
+            FILE *fp = hashtable_fetch(bgd_instance->fp_htable, file_name);
+            if(fp == NULL)
+            {
+                fp = open_file(bgd_instance->path, file_name, "a");
+                if(fp == NULL)
+                {
+                    int err = errno;
+                    LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
+                                    "bgdfilter: Cannot open '%s/%s': %s",
+                                    bgd_instance->path, file_name, strerror(err))));
+                    goto end;
+                }
+
+                hashtable_add(bgd_instance->fp_htable, file_name, fp);
+            }
+
+            fprintf(fp, "%s\n", modutil_get_SQL(queue));
+            fflush(fp);
+
+            /*    db_names = skygw_get_database_names(queue, &number_of_db_names);
 
                 if(number_of_db_names > 0)
                     fprintf(bgd_instance->fp, "%s\n", db_names[0]);
@@ -369,23 +459,23 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
 
                 fflush(bgd_instance->fp);
                    */
-                break;
+            break;
         }
-    } 
+    }
 
 end:
+    if(file_name != NULL)
+        free(file_name);
+
     return bgd_session->down.routeQuery(bgd_session->down.instance, 
                     bgd_session->down.session, queue);
 }
 
 /* 
- * ===  FUNCTION  ======================================================================
  *         Name:  diagnostic
  *  Description:  
- * =====================================================================================
  */
-static void	
-diagnostic(FILTER *instance, void *fsession, DCB *dcb)
+static void	diagnostic(FILTER *instance, void *fsession, DCB *dcb)
 {
     LOGIF(LD, (skygw_log_write_flush(
 				LOGFILE_DEBUG,
