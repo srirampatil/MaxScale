@@ -61,7 +61,9 @@ static	void	*newSession(FILTER *instance, SESSION *session);
 static	void 	closeSession(FILTER *instance, void *session);
 static	void 	freeSession(FILTER *instance, void *session);
 static	void	setDownstream(FILTER *instance, void *fsession, DOWNSTREAM *downstream);
-static	int	routeQuery(FILTER *instance, void *fsession, GWBUF *queue);
+static  void	setUpstream(FILTER *instance, void *fsession, UPSTREAM *downstream);
+static	int	    routeQuery(FILTER *instance, void *fsession, GWBUF *queue);
+static  int     clientReply(FILTER *instance, void *fsession, GWBUF *queue);
 static	void	diagnostic(FILTER *instance, void *fsession, DCB *dcb);
 
 
@@ -71,9 +73,9 @@ static FILTER_OBJECT MyObject = {
     closeSession,
     freeSession,
     setDownstream,
-    NULL,		// No Upstream requirement
+    setUpstream,
     routeQuery,
-    NULL,		// No client reply
+    clientReply,
     diagnostic,
 };
 
@@ -104,11 +106,16 @@ static BGD_INSTANCE *instances_list;
  *       struct:  BGD_SESSION
  *  Description:  bgdfilter session
  */
-typedef struct {
+typedef struct bgd_session BGD_SESSION;
+
+struct bgd_session {
     DOWNSTREAM down;
+    UPSTREAM up;
+
+    GWBUF *query_buf;
     char *current_db;
     int active;
-} BGD_SESSION;
+};
 
 /*
  * Hash function for fp_htable in BGD_INSTANCE
@@ -210,7 +217,8 @@ static FILE *open_file(char *folder_path, char *file_name, char *mode)
  * @param path  path of directory to be created.
  * @return zero if successful else errno value set by system calls.
  */
-static int create_dir(char *path)
+static int 
+create_dir(char *path)
 {
     struct stat st;
 
@@ -246,6 +254,70 @@ static int create_dir(char *path)
     }
 
     return 0;
+}
+
+/*
+ * Log the data coming from an insert query.
+ *
+ * @param bgd_instance  Current filter instance
+ * @param bgd_session   Current filter session
+ * @param queue         buffer containing the insert query
+ */
+static void
+log_insert_data(BGD_INSTANCE *bgd_instance, BGD_SESSION *bgd_session, GWBUF *queue)
+{
+    int number_of_table_names;
+    char *file_name = NULL;
+    char **table_names;
+
+    LOGIF(LD, (skygw_log_write_flush(
+                    LOGFILE_DEBUG, 
+                    "bgdfilter: %s.\n", __func__)));
+
+    table_names = skygw_get_table_names(queue, &number_of_table_names, TRUE);
+    if(number_of_table_names == 0)
+        return;
+
+    file_name = (char *)calloc(1, strlen(bgd_session->current_db)
+                    + strlen(table_names[0]) + 4 /* for "data" */
+                    + 2 /* for two . */
+                    + 1 /* for null termination */
+                    );
+
+    sprintf(file_name, "%s.%s.data", bgd_session->current_db, 
+            table_names[0]);
+
+    FILE *fp = hashtable_fetch(bgd_instance->fp_htable, file_name);
+    if(fp == NULL)
+    {
+        fp = open_file(bgd_instance->path, file_name, "a");
+        if(fp == NULL)
+        {
+            int err = errno;
+            LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
+                            "bgdfilter: Cannot open '%s/%s': %s",
+                            bgd_instance->path, file_name, strerror(err))));
+
+            goto log_insert_data_end;
+        }
+
+        hashtable_add(bgd_instance->fp_htable, file_name, fp);
+    }
+
+    if(fprintf(fp, "%s\n", modutil_get_SQL(queue)) < 0)
+    {
+        LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
+                        "bgdfilter: Cannot write to '%s/%s'",
+                        bgd_instance->path, file_name)));
+
+        goto log_insert_data_end;
+    }
+
+    fflush(fp);
+
+log_insert_data_end:
+    if(file_name != NULL)
+        free(file_name);
 }
 
 /* 
@@ -327,7 +399,7 @@ static void *newSession(FILTER *instance, SESSION *session)
 				"bgdfilter: %s.\n",
 				__func__)));
 
-    
+    bgd_session->query_buf = NULL;
     bgd_session->current_db = strdup(ses_data->db);
 
     return bgd_session;
@@ -381,24 +453,48 @@ static void	setDownstream(FILTER *instance, void *fsession,
     bgd_session->down = *downstream;
 }
 
+
+static void	
+setUpstream(FILTER *instance, void *fsession, UPSTREAM *upstream)
+{
+    BGD_SESSION *bgd_session = (BGD_SESSION *)fsession;
+    bgd_session->up = *upstream;
+}
+
 /* 
  *         Name:  routeQuery
  *  Description:  
  */
-static int routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
+static int 
+routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
 {
     BGD_INSTANCE *bgd_instance = (BGD_INSTANCE *)instance;
     BGD_SESSION *bgd_session = (BGD_SESSION *)fsession;
 
-    int number_of_table_names, number_of_db_names;
-    char **table_names, **db_names;
-    bool success = false;
-    char *file_name = NULL;
+    bgd_session->query_buf = gwbuf_clone(queue);
     
+    return bgd_session->down.routeQuery(bgd_session->down.instance, 
+                    bgd_session->down.session, queue);
+}
+
+
+static int 
+clientReply(FILTER *instance, void *fsession, GWBUF *reply)
+{
+    BGD_INSTANCE *bgd_instance = (BGD_INSTANCE *)instance;
+    BGD_SESSION *bgd_session = (BGD_SESSION *)fsession;
+    bool success = false;
+    GWBUF *queue = bgd_session->query_buf;
+
+    unsigned char *ptr = (unsigned char *)reply->start;
+
     LOGIF(LD, (skygw_log_write_flush(
 				LOGFILE_DEBUG,
 				"bgdfilter: %s.\n",
-				__func__)));
+				__func__))); 
+
+    if(PTR_IS_ERR(ptr) || bgd_session->query_buf == NULL || !PTR_IS_OK(ptr))
+        goto client_reply_end;
 
     if(modutil_is_SQL(queue))
     {
@@ -408,67 +504,21 @@ static int routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
         if(!success)
         {
             skygw_log_write(LOGFILE_ERROR,"Error: Parsing query failed.");
-            goto end;
+            goto client_reply_end;
         }
 
         switch(query_classifier_get_operation(queue))
         {
         case QUERY_OP_INSERT:              
-            LOGIF(LD, (skygw_log_write_flush(
-                    LOGFILE_DEBUG, 
-                    "bgdfilter: insert query")));
-
-            table_names = skygw_get_table_names(queue, &number_of_table_names, TRUE);
-            if(number_of_table_names == 0)
-                goto end;
-
-            file_name = (char *)calloc(1, strlen(bgd_session->current_db)
-                    + strlen(table_names[0]) + 4 /* for "data" */
-                    + 2 /* for two . */
-                    + 1 /* for null termination */
-                    );
-
-            sprintf(file_name, "%s.%s.data", bgd_session->current_db, 
-                        table_names[0]);
-
-            FILE *fp = hashtable_fetch(bgd_instance->fp_htable, file_name);
-            if(fp == NULL)
-            {
-                fp = open_file(bgd_instance->path, file_name, "a");
-                if(fp == NULL)
-                {
-                    int err = errno;
-                    LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
-                                    "bgdfilter: Cannot open '%s/%s': %s",
-                                    bgd_instance->path, file_name, strerror(err))));
-                    goto end;
-                }
-
-                hashtable_add(bgd_instance->fp_htable, file_name, fp);
-            }
-
-            fprintf(fp, "%s\n", modutil_get_SQL(queue));
-            fflush(fp);
-
-            /*    db_names = skygw_get_database_names(queue, &number_of_db_names);
-
-                if(number_of_db_names > 0)
-                    fprintf(bgd_instance->fp, "%s\n", db_names[0]);
-                else
-                    fprintf(bgd_instance->fp, "%s\n", table_names[0]);
-
-                fflush(bgd_instance->fp);
-                   */
+            log_insert_data(bgd_instance, bgd_session, queue);
             break;
         }
     }
 
-end:
-    if(file_name != NULL)
-        free(file_name);
-
-    return bgd_session->down.routeQuery(bgd_session->down.instance, 
-                    bgd_session->down.session, queue);
+client_reply_end:
+    
+    return bgd_session->up.clientReply(bgd_session->up.instance,
+                bgd_session->up.session, reply);
 }
 
 /* 
