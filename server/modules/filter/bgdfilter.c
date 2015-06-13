@@ -43,7 +43,7 @@ extern int            lm_enabled_logfiles_bitmask;
 extern size_t         log_ses_count[];
 extern __thread log_info_t tls_log_info;
 
-MODULE_INFO 	info = {
+MODULE_INFO info = {
 	MODULE_API_FILTER,
 	MODULE_GA,
 	FILTER_VERSION,
@@ -113,8 +113,11 @@ struct bgd_session {
     UPSTREAM up;
 
     GWBUF *query_buf;
-    char *current_db;
-    int active;
+
+    char *current_db;       // Current database name 
+    char *new_db;           // Used when trying to change database (USE DB)
+
+    bool active;            // Not used currently
 };
 
 /*
@@ -399,8 +402,12 @@ static void *newSession(FILTER *instance, SESSION *session)
 				"bgdfilter: %s.\n",
 				__func__)));
 
+    bgd_session->new_db = NULL;
     bgd_session->query_buf = NULL;
-    bgd_session->current_db = strdup(ses_data->db);
+    bgd_session->current_db = NULL;
+
+    if(ses_data->db != NULL)
+        bgd_session->current_db = strdup(ses_data->db);
 
     return bgd_session;
 }
@@ -471,7 +478,15 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
     BGD_INSTANCE *bgd_instance = (BGD_INSTANCE *)instance;
     BGD_SESSION *bgd_session = (BGD_SESSION *)fsession;
 
-    bgd_session->query_buf = gwbuf_clone(queue);
+    LOGIF(LD, (skygw_log_write_flush(
+				LOGFILE_DEBUG,
+				"bgdfilter: %s.\n", __func__))); 
+
+    // Check if user is changing database
+    if(*((char *)(queue->start + 4)) == MYSQL_COM_INIT_DB)
+        bgd_session->new_db = strdup((char *) (queue->start + 5));    
+    else
+        bgd_session->query_buf = gwbuf_clone(queue);
     
     return bgd_session->down.routeQuery(bgd_session->down.instance, 
                     bgd_session->down.session, queue);
@@ -494,7 +509,23 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
 				__func__))); 
 
     if(PTR_IS_ERR(ptr) || bgd_session->query_buf == NULL || !PTR_IS_OK(ptr))
+    {
+        if(bgd_session->new_db != NULL)
+        {
+            free(bgd_session->new_db);
+            bgd_session->new_db = NULL;
+        }
         goto client_reply_end;
+    }
+
+    if(bgd_session->new_db != NULL)
+    {
+        if(bgd_session->current_db != NULL)
+            free(bgd_session->current_db);
+
+        bgd_session->current_db = bgd_session->new_db;
+        bgd_session->new_db = NULL;
+    }
 
     if(modutil_is_SQL(queue))
     {
