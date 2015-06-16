@@ -43,6 +43,13 @@ extern int            lm_enabled_logfiles_bitmask;
 extern size_t         log_ses_count[];
 extern __thread log_info_t tls_log_info;
 
+#define PARAM_OPTIONS "options"
+#define PARAM_TABLES "tables"
+
+#define TABLES_DELIM ","
+
+#define DATA_FILE_EXTN ".data"
+
 MODULE_INFO info = {
 	MODULE_API_FILTER,
 	MODULE_GA,
@@ -52,6 +59,7 @@ MODULE_INFO info = {
 };
 
 static char *version_str = "V1.1.1";
+static const int extn_length = strlen(DATA_FILE_EXTN);
 
 /*
  * The filter entry points
@@ -65,7 +73,6 @@ static  void	setUpstream(FILTER *instance, void *fsession, UPSTREAM *downstream)
 static	int	    routeQuery(FILTER *instance, void *fsession, GWBUF *queue);
 static  int     clientReply(FILTER *instance, void *fsession, GWBUF *queue);
 static	void	diagnostic(FILTER *instance, void *fsession, DCB *dcb);
-
 
 static FILTER_OBJECT MyObject = {
     createInstance,
@@ -81,13 +88,16 @@ static FILTER_OBJECT MyObject = {
 
 
 /*
- *
+ * TABLE_INFO structure
  */
 typedef struct table_info TABLE_INFO;
 
 struct table_info
 {
-    char *data_file;     // <db name>.<table name>.data
+    bool is_valid;          // identifies if the table_info is filled with 
+                            // valid information
+                            
+    char *data_file;        // <db name>.<table name>.data
     FILE *fp;
 };
 
@@ -101,10 +111,7 @@ typedef struct bgd_instance BGD_INSTANCE;
 struct bgd_instance {
     char *format;   /* Storage format JSON or XML (Default: JSON */
     char *path;     /* Path to a folder where to store all data files */
-    char *match;    /* Mandatory regex to match against table names */
     
-    regex_t re;     /*  Compiled regex text */
-
     HASHTABLE *htable;   /* Hash table mapping from file name to file pointer */
 
     BGD_INSTANCE *next;
@@ -130,6 +137,13 @@ struct bgd_session {
 
     bool active;            // Not used currently
 };
+
+
+static bool process_tables_param(char *, BGD_INSTANCE *);
+
+static void free_bgd_instance(BGD_INSTANCE *);
+static void free_bgd_session(BGD_SESSION *);
+void free_table_info(void *);       // use while initializing HASHTABLE
 
 /*
  * Hash function for htable in BGD_INSTANCE
@@ -160,21 +174,6 @@ static int fp_hashfn(void *key)
 static int fp_cmpfn(void *key1, void *key2)
 {
     return strcmp((char *)key1, (char *)key2);
-}
-
-/*
- *  Frees the TABLE_INFO object
- */
-void free_table_info(void *param)
-{
-    TABLE_INFO *info = (TABLE_INFO *)param;
-    if (info->data_file != NULL)
-        free(info->data_file);
-
-    if (info->fp != NULL)
-        fclose(info->fp);
-
-    free(info);
 }
 
 /**
@@ -304,44 +303,25 @@ log_insert_data(BGD_INSTANCE *bgd_instance, BGD_SESSION *bgd_session, GWBUF *que
                     "bgdfilter: %s.\n", __func__)));
 
     table_names = skygw_get_table_names(queue, &number_of_table_names, TRUE);
-    if (number_of_table_names == 0)
+    if (number_of_table_names != 1)
         return;
 
     file_name = (char *)calloc(1, strlen(bgd_session->current_db)
-                    + strlen(table_names[0]) + 4 /* for "data" */
-                    + 2 /* for two . */
+                    + strlen(table_names[0]) + extn_length /* for "data" */
+                    + 1 /* for . between dbname and table name*/
                     + 1 /* for null termination */
                     );
 
-    sprintf(file_name, "%s.%s.data", bgd_session->current_db, 
-            table_names[0]);
+    sprintf(file_name, "%s.%s%s", bgd_session->current_db, 
+            table_names[0], DATA_FILE_EXTN);
 
     TABLE_INFO *tinfo = hashtable_fetch(bgd_instance->htable, file_name);
-    if (tinfo == NULL)
+    if (tinfo == NULL || tinfo->fp == NULL)
     {
-        tinfo = (TABLE_INFO *)calloc(1, sizeof(TABLE_INFO));
-        if (tinfo == NULL)
-        {
-            LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
-                            "bgdfilter: Cannot allocate memory to TABLE_INFO \
-                            in function %s.",
-                            __func__)));
-            return;
-        }
-
-        tinfo->fp = open_file(bgd_instance->path, file_name, "a");
-        if (tinfo->fp == NULL)
-        {
-            int err = errno;
-            LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
-                            "bgdfilter: Cannot open '%s/%s': %s",
-                            bgd_instance->path, file_name, strerror(err))));
-
-            goto log_insert_data_end;
-        }
-
-        tinfo->data_file = strdup(file_name);
-        hashtable_add(bgd_instance->htable, file_name, tinfo);
+        LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
+                        "bgdfilter: Table info or file pointer not found in \
+                        the hash table.")));
+        goto log_insert_data_end;
     }
 
     if (fprintf(tinfo->fp, "%s\n", modutil_get_SQL(queue)) < 0)
@@ -349,7 +329,6 @@ log_insert_data(BGD_INSTANCE *bgd_instance, BGD_SESSION *bgd_session, GWBUF *que
         LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
                         "bgdfilter: Cannot write to '%s/%s'",
                         bgd_instance->path, file_name)));
-
         goto log_insert_data_end;
     }
 
@@ -368,18 +347,25 @@ static FILTER *createInstance(char **options, FILTER_PARAMETER **params)
 {
     BGD_INSTANCE * bgd_instance;
     HASHTABLE *ht;
-    int dir_ret;
+    int dir_ret, i;
+    bool has_tables_param = false;
 
-    if((bgd_instance = (BGD_INSTANCE *)calloc(1, sizeof(BGD_INSTANCE))) == NULL)
+    LOGIF(LD, (skygw_log_write_flush(
+				LOGFILE_DEBUG,
+				"bgdfilter: %s.\n",
+				__func__)));
+
+    if ((bgd_instance = (BGD_INSTANCE *)calloc(1, sizeof(BGD_INSTANCE))) == NULL)
         return NULL;
 
     // Hash table initialization
-    if((ht = hashtable_alloc(100, fp_hashfn, fp_cmpfn)) == NULL)
+    if ((ht = hashtable_alloc(100, fp_hashfn, fp_cmpfn)) == NULL)
     {
         LOGIF(LE, (skygw_log_write_flush(
 				LOGFILE_ERROR,
 				"bgdfilter: Could not allocate hashtable")));
-        free(bgd_instance);
+
+        free_bgd_instance(bgd_instance);
         return NULL;
     }
 
@@ -388,19 +374,22 @@ static FILTER *createInstance(char **options, FILTER_PARAMETER **params)
     bgd_instance->htable = ht;
     bgd_instance->format = NULL;
     bgd_instance->path = NULL;
-    bgd_instance->match = NULL;
 
-    if(options)
+    if (!params)
+    {
+        LOGIF(LE, (skygw_log_write_flush(
+				LOGFILE_ERROR,
+				"bgdfilter: Insufficient parameters.\n")));
+        free_bgd_instance(bgd_instance);
+        return NULL;
+    } 
+
+    if (options)
         bgd_instance->path = strdup(options[0]);
     else
         bgd_instance->path = strdup("/tmp/bgd");
 
-    LOGIF(LD, (skygw_log_write_flush(
-				LOGFILE_DEBUG,
-				"bgdfilter: %s.\n",
-				__func__)));
-
-    if((dir_ret = create_dir(bgd_instance->path)) != 0)
+    if ((dir_ret = create_dir(bgd_instance->path)) != 0)
     {
         LOGIF(LE, (skygw_log_write_flush(
 				LOGFILE_ERROR,
@@ -408,11 +397,39 @@ static FILTER *createInstance(char **options, FILTER_PARAMETER **params)
                 bgd_instance->path,
 				strerror(dir_ret))));
 
-        free(bgd_instance->path);
-        free(bgd_instance);
-
+        free_bgd_instance(bgd_instance);
         return NULL;
     }
+
+    for (i = 0; params[i]; i++)
+    {
+        if (!strcmp(PARAM_TABLES, params[i]->name))
+        {
+            if (!process_tables_param(params[i]->value, bgd_instance))
+            {
+                free_bgd_instance(bgd_instance);
+                return NULL;
+            }
+
+            has_tables_param = true;
+        }
+        else if (!filter_standard_parameter(params[i]->name))
+        {
+		    LOGIF(LE, (skygw_log_write_flush(
+                   LOGFILE_ERROR,
+                   "bgdfilter: Unexpected parameter '%s'.\n",
+                   params[i]->name)));
+        }
+    }
+
+    if(!has_tables_param)
+    {
+        LOGIF(LE, (skygw_log_write_flush(
+				LOGFILE_ERROR,
+				"bgdfilter: 'tables' parameter required.\n")));
+        free_bgd_instance(bgd_instance);
+        return NULL;
+    } 
 
     spinlock_acquire(&instances_lock);
     bgd_instance->next = instances_list;
@@ -474,11 +491,7 @@ static void freeSession(FILTER *instance, void *session)
 				"bgdfilter: %s.\n",
 				__func__)));
 
-    BGD_SESSION *bgd_session = (BGD_SESSION *)session;
-    if(bgd_session->current_db != NULL)
-        free(bgd_session->current_db);
-
-    free(bgd_session);
+    free_bgd_session((BGD_SESSION *)session);    
 }
 
 /* 
@@ -600,4 +613,117 @@ static void	diagnostic(FILTER *instance, void *fsession, DCB *dcb)
 				"bgdfilter: %s.\n",
 				__func__)));
     return;
+}
+
+/////////////// Filter params processing ////////////////
+
+/*
+ * Processes the tables parameter and stores respective TABLE_INFO objects in
+ * HASHTABLE. Assumes that tables string is trimmed.
+ *
+ * @param tables    comma separated * <db>.<table> strings expected, no spaces 
+ *                  in between
+ * @param bgd_instance
+ * @return false if error
+ */
+static bool process_tables_param(char *tables, BGD_INSTANCE *bgd_instance)
+{
+    if(tables == NULL || !strcmp(tables, ""))
+        return false;
+
+    char *tname = strtok(tables, TABLES_DELIM);
+    while (tname != NULL)
+    {
+        TABLE_INFO *tinfo = (TABLE_INFO *)calloc(1, sizeof(TABLE_INFO));
+        if (tinfo == NULL)
+        {
+            LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, "bgdfilter: \
+                            Cannot allocate memory to TABLE_INFO in \
+                            function %s at line %d.", __func__,
+                            __LINE__)));
+ 
+            free_bgd_instance(bgd_instance);
+            return false;
+        }
+
+        tinfo->is_valid = true;
+
+        // +1 for null termination
+        tinfo->data_file = (char *)calloc(strlen(tname) + extn_length
+                                       + 1, sizeof(char));
+        strcpy(tinfo->data_file, tname);
+        strcat(tinfo->data_file, DATA_FILE_EXTN);
+
+        tinfo->fp = open_file(bgd_instance->path, tinfo->data_file, "a");
+        if (tinfo->fp == NULL)
+        {
+            int err = errno;
+            LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
+                    "bgdfilter: Cannot open '%s/%s': %s",
+                    bgd_instance->path, tinfo->data_file, strerror(err))));
+
+            free_bgd_instance(bgd_instance);
+            return false;
+        }
+
+        hashtable_add(bgd_instance->htable, tinfo->data_file, tinfo);
+
+        tname = strtok(NULL, TABLES_DELIM);
+    }
+
+    return true;
+}
+
+/////////////// Freeing functions ///////////////////
+
+/*
+ * Frees BGD_INSTANCE object
+ */
+static void free_bgd_instance(BGD_INSTANCE *instance)
+{
+    if(instance == NULL)
+        return;
+
+    if (instance->path != NULL)
+        free(instance->path);
+
+    if (instance->htable != NULL)
+        hashtable_free(instance->htable);
+
+    free(instance);
+}
+
+static void free_bgd_session(BGD_SESSION *session)
+{
+    if(session == NULL)
+        return;
+
+    if (session->query_buf != NULL)
+        free(session->query_buf);
+
+    if (session->current_db != NULL)
+        free(session->current_db);
+
+    if (session->new_db != NULL)
+        free(session->new_db);
+
+    free(session);
+}
+
+/*
+ *  Frees the TABLE_INFO object
+ */
+void free_table_info(void *param)
+{
+    if(param == NULL)
+        return;
+
+    TABLE_INFO *info = (TABLE_INFO *)param;
+    if (info->data_file != NULL)
+        free(info->data_file);
+
+    if (info->fp != NULL)
+        fclose(info->fp);
+
+    free(info);
 }
