@@ -81,10 +81,21 @@ static FILTER_OBJECT MyObject = {
 
 
 /*
+ *
+ */
+typedef struct table_info TABLE_INFO;
+
+struct table_info
+{
+    char *data_file;     // <db name>.<table name>.data
+    FILE *fp;
+};
+
+
+/*
  *       struct:  BGD_INSTANCE
  *  Description:  bgdfilter instance.
  */
-
 typedef struct bgd_instance BGD_INSTANCE;
 
 struct bgd_instance {
@@ -94,7 +105,7 @@ struct bgd_instance {
     
     regex_t re;     /*  Compiled regex text */
 
-    HASHTABLE *fp_htable;   /* Hash table mapping from file name to file pointer */
+    HASHTABLE *htable;   /* Hash table mapping from file name to file pointer */
 
     BGD_INSTANCE *next;
 };
@@ -121,7 +132,7 @@ struct bgd_session {
 };
 
 /*
- * Hash function for fp_htable in BGD_INSTANCE
+ * Hash function for htable in BGD_INSTANCE
  *
  * @param key   null-terminated string to be hashed.
  * @return hash value
@@ -140,7 +151,7 @@ static int fp_hashfn(void *key)
 }
 
 /*
- * Comparison function for fp_htable in BGD_INSTANCE
+ * Comparison function for htable in BGD_INSTANCE
  *
  * @param key1  first null-terminated string to be compared
  * @param key2  second null-terminated string to be compared
@@ -149,6 +160,21 @@ static int fp_hashfn(void *key)
 static int fp_cmpfn(void *key1, void *key2)
 {
     return strcmp((char *)key1, (char *)key2);
+}
+
+/*
+ *  Frees the TABLE_INFO object
+ */
+void free_table_info(void *param)
+{
+    TABLE_INFO *info = (TABLE_INFO *)param;
+    if (info->data_file != NULL)
+        free(info->data_file);
+
+    if (info->fp != NULL)
+        fclose(info->fp);
+
+    free(info);
 }
 
 /**
@@ -278,7 +304,7 @@ log_insert_data(BGD_INSTANCE *bgd_instance, BGD_SESSION *bgd_session, GWBUF *que
                     "bgdfilter: %s.\n", __func__)));
 
     table_names = skygw_get_table_names(queue, &number_of_table_names, TRUE);
-    if(number_of_table_names == 0)
+    if (number_of_table_names == 0)
         return;
 
     file_name = (char *)calloc(1, strlen(bgd_session->current_db)
@@ -290,11 +316,21 @@ log_insert_data(BGD_INSTANCE *bgd_instance, BGD_SESSION *bgd_session, GWBUF *que
     sprintf(file_name, "%s.%s.data", bgd_session->current_db, 
             table_names[0]);
 
-    FILE *fp = hashtable_fetch(bgd_instance->fp_htable, file_name);
-    if(fp == NULL)
+    TABLE_INFO *tinfo = hashtable_fetch(bgd_instance->htable, file_name);
+    if (tinfo == NULL)
     {
-        fp = open_file(bgd_instance->path, file_name, "a");
-        if(fp == NULL)
+        tinfo = (TABLE_INFO *)calloc(1, sizeof(TABLE_INFO));
+        if (tinfo == NULL)
+        {
+            LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
+                            "bgdfilter: Cannot allocate memory to TABLE_INFO \
+                            in function %s.",
+                            __func__)));
+            return;
+        }
+
+        tinfo->fp = open_file(bgd_instance->path, file_name, "a");
+        if (tinfo->fp == NULL)
         {
             int err = errno;
             LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
@@ -304,10 +340,11 @@ log_insert_data(BGD_INSTANCE *bgd_instance, BGD_SESSION *bgd_session, GWBUF *que
             goto log_insert_data_end;
         }
 
-        hashtable_add(bgd_instance->fp_htable, file_name, fp);
+        tinfo->data_file = strdup(file_name);
+        hashtable_add(bgd_instance->htable, file_name, tinfo);
     }
 
-    if(fprintf(fp, "%s\n", modutil_get_SQL(queue)) < 0)
+    if (fprintf(tinfo->fp, "%s\n", modutil_get_SQL(queue)) < 0)
     {
         LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
                         "bgdfilter: Cannot write to '%s/%s'",
@@ -316,10 +353,10 @@ log_insert_data(BGD_INSTANCE *bgd_instance, BGD_SESSION *bgd_session, GWBUF *que
         goto log_insert_data_end;
     }
 
-    fflush(fp);
+    fflush(tinfo->fp);
 
 log_insert_data_end:
-    if(file_name != NULL)
+    if (file_name != NULL)
         free(file_name);
 }
 
@@ -346,9 +383,9 @@ static FILTER *createInstance(char **options, FILTER_PARAMETER **params)
         return NULL;
     }
 
-    hashtable_memory_fns(ht, (HASHMEMORYFN)strdup, NULL, (HASHMEMORYFN)free, NULL);
+    hashtable_memory_fns(ht, (HASHMEMORYFN)strdup, NULL, (HASHMEMORYFN)free, (HASHMEMORYFN)free_table_info);
 
-    bgd_instance->fp_htable = ht;
+    bgd_instance->htable = ht;
     bgd_instance->format = NULL;
     bgd_instance->path = NULL;
     bgd_instance->match = NULL;
