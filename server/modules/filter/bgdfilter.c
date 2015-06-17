@@ -294,26 +294,24 @@ create_dir(char *path)
 static void
 log_insert_data(BGD_INSTANCE *bgd_instance, BGD_SESSION *bgd_session, GWBUF *queue)
 {
-    int number_of_table_names;
+    int number_of_table_names = 0;
     char *file_name = NULL;
-    char **table_names;
+    char **table_names = NULL;
 
     LOGIF(LD, (skygw_log_write_flush(
                     LOGFILE_DEBUG, 
                     "bgdfilter: %s.\n", __func__)));
 
     table_names = skygw_get_table_names(queue, &number_of_table_names, TRUE);
-    if (number_of_table_names != 1)
+    if (number_of_table_names == 0)
+    {
+        LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
+                        "bgdfilter: No tables found.\n")));
         return;
+    }
 
-    file_name = (char *)calloc(1, strlen(bgd_session->current_db)
-                    + strlen(table_names[0]) + extn_length /* for "data" */
-                    + 1 /* for . between dbname and table name*/
-                    + 1 /* for null termination */
-                    );
-
-    sprintf(file_name, "%s.%s%s", bgd_session->current_db, 
-            table_names[0], DATA_FILE_EXTN);
+    generate_data_file_name(bgd_session->current_db, table_names[0], 
+                                &file_name);
 
     TABLE_INFO *tinfo = hashtable_fetch(bgd_instance->htable, file_name);
     if (tinfo == NULL || tinfo->fp == NULL)
@@ -459,6 +457,7 @@ static void *newSession(FILTER *instance, SESSION *session)
     bgd_session->new_db = NULL;
     bgd_session->query_buf = NULL;
     bgd_session->current_db = NULL;
+    bgd_session->active = false;
 
     if(ses_data->db != NULL)
         bgd_session->current_db = strdup(ses_data->db);
@@ -527,17 +526,51 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
 {
     BGD_INSTANCE *bgd_instance = (BGD_INSTANCE *)instance;
     BGD_SESSION *bgd_session = (BGD_SESSION *)fsession;
+    int number_of_tables = 0, i;
+    char **table_names = NULL;
+    bool success = true;
+    char *table_file = NULL;
 
     LOGIF(LD, (skygw_log_write_flush(
 				LOGFILE_DEBUG,
 				"bgdfilter: %s.\n", __func__))); 
 
     // Check if user is changing database
-    if(*((char *)(queue->start + 4)) == MYSQL_COM_INIT_DB)
-        bgd_session->new_db = strdup((char *) (queue->start + 5));    
-    else
-        bgd_session->query_buf = gwbuf_clone(queue);
+    if (*((char *)(queue->start + 4)) == MYSQL_COM_INIT_DB)
+    {
+        bgd_session->new_db = strdup((char *) (queue->start + 5));
+        bgd_session->active = true;
+        goto route_query_end;
+    }
     
+    if (modutil_is_SQL(queue))
+    {
+        bgd_session->query_buf = gwbuf_clone(queue);
+
+        if (!query_is_parsed(queue))
+            success = parse_query(queue);
+
+        if (!success)
+        {
+            skygw_log_write(LOGFILE_ERROR,"Error: Parsing query failed.");
+            goto route_query_end;
+        }
+    
+        table_names = skygw_get_table_names(queue, &number_of_tables, true);
+        if(number_of_tables == 0)
+            goto route_query_end;
+
+        generate_data_file_name(bgd_session->current_db, table_names[0], 
+                                    &table_file);
+
+        if (hashtable_fetch(bgd_instance->htable, table_file) == NULL)
+            goto route_query_end;
+
+        bgd_session->active = true;
+        free(table_file);
+    }
+
+route_query_end:
     return bgd_session->down.routeQuery(bgd_session->down.instance, 
                     bgd_session->down.session, queue);
 }
@@ -548,7 +581,7 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
 {
     BGD_INSTANCE *bgd_instance = (BGD_INSTANCE *)instance;
     BGD_SESSION *bgd_session = (BGD_SESSION *)fsession;
-    bool success = false;
+    bool success = true;
     GWBUF *queue = bgd_session->query_buf;
 
     unsigned char *ptr = (unsigned char *)reply->start;
@@ -556,11 +589,14 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
     LOGIF(LD, (skygw_log_write_flush(
 				LOGFILE_DEBUG,
 				"bgdfilter: %s.\n",
-				__func__))); 
+				__func__)));
 
-    if(PTR_IS_ERR(ptr) || bgd_session->query_buf == NULL || !PTR_IS_OK(ptr))
+    if (!bgd_session->active)
+      goto client_reply_end; 
+
+    if (PTR_IS_ERR(ptr) || bgd_session->query_buf == NULL || !PTR_IS_OK(ptr))
     {
-        if(bgd_session->new_db != NULL)
+        if (bgd_session->new_db != NULL)
         {
             free(bgd_session->new_db);
             bgd_session->new_db = NULL;
@@ -568,27 +604,27 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
         goto client_reply_end;
     }
 
-    if(bgd_session->new_db != NULL)
+    if (bgd_session->new_db != NULL)
     {
-        if(bgd_session->current_db != NULL)
+        if (bgd_session->current_db != NULL)
             free(bgd_session->current_db);
 
         bgd_session->current_db = bgd_session->new_db;
         bgd_session->new_db = NULL;
     }
 
-    if(modutil_is_SQL(queue))
+    if (modutil_is_SQL(queue))
     {
-        if(!query_is_parsed(queue))
+        if (!query_is_parsed(queue))
             success = parse_query(queue);
 
-        if(!success)
+        if (!success)
         {
             skygw_log_write(LOGFILE_ERROR,"Error: Parsing query failed.");
             goto client_reply_end;
         }
 
-        switch(query_classifier_get_operation(queue))
+        switch (query_classifier_get_operation(queue))
         {
         case QUERY_OP_INSERT:              
             log_insert_data(bgd_instance, bgd_session, queue);
@@ -598,6 +634,7 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
 
 client_reply_end:
     
+    bgd_session->active = false;
     return bgd_session->up.clientReply(bgd_session->up.instance,
                 bgd_session->up.session, reply);
 }
@@ -726,4 +763,18 @@ void free_table_info(void *param)
         fclose(info->fp);
 
     free(info);
+}
+
+/////////////// Other ///////////////
+
+void generate_data_file_name(char *dbname, char *tblname, char **file_name)
+{
+    *file_name = (char *)calloc(1, strlen(dbname)
+                                        + strlen(tblname)
+                                        + extn_length
+                                        + 1     // for .
+                                        + 1);   // for null termination
+
+    if(*file_name != NULL)
+        sprintf(*file_name, "%s.%s%s", dbname, tblname, DATA_FILE_EXTN);
 }
