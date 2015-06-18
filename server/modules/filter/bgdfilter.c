@@ -135,6 +135,8 @@ struct bgd_session {
     char *current_db;       // Current database name 
     char *new_db;           // Used when trying to change database (USE DB)
 
+    char *current_table_data_file;
+
     bool active;            // Not used currently
 };
 
@@ -295,8 +297,8 @@ static void
 log_insert_data(BGD_INSTANCE *bgd_instance, BGD_SESSION *bgd_session, GWBUF *queue)
 {
     int number_of_table_names = 0;
-    char *file_name = NULL;
     char **table_names = NULL;
+    char *file_name = bgd_session->current_table_data_file;
 
     LOGIF(LD, (skygw_log_write_flush(
                     LOGFILE_DEBUG, 
@@ -309,9 +311,6 @@ log_insert_data(BGD_INSTANCE *bgd_instance, BGD_SESSION *bgd_session, GWBUF *que
                         "bgdfilter: No tables found.\n")));
         return;
     }
-
-    generate_data_file_name(bgd_session->current_db, table_names[0], 
-                                &file_name);
 
     TABLE_INFO *tinfo = hashtable_fetch(bgd_instance->htable, file_name);
     if (tinfo == NULL || tinfo->fp == NULL)
@@ -333,8 +332,7 @@ log_insert_data(BGD_INSTANCE *bgd_instance, BGD_SESSION *bgd_session, GWBUF *que
     fflush(tinfo->fp);
 
 log_insert_data_end:
-    if (file_name != NULL)
-        free(file_name);
+    return;
 }
 
 /* 
@@ -458,6 +456,7 @@ static void *newSession(FILTER *instance, SESSION *session)
     bgd_session->query_buf = NULL;
     bgd_session->current_db = NULL;
     bgd_session->active = false;
+    bgd_session->current_table_data_file = NULL;
 
     if(ses_data->db != NULL)
         bgd_session->current_db = strdup(ses_data->db);
@@ -564,10 +563,16 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
                                     &table_file);
 
         if (hashtable_fetch(bgd_instance->htable, table_file) == NULL)
+        {
+            free(table_file);
             goto route_query_end;
+        }
 
+        if(bgd_session->current_table_data_file != NULL)
+            free(bgd_session->current_table_data_file);
+
+        bgd_session->current_table_data_file = table_file;
         bgd_session->active = true;
-        free(table_file);
     }
 
 route_query_end:
@@ -743,6 +748,9 @@ static void free_bgd_session(BGD_SESSION *session)
 
     if (session->new_db != NULL)
         free(session->new_db);
+
+    if (session->current_table_data_file != NULL)
+        free(session->current_table_data_file);
 
     free(session);
 }
