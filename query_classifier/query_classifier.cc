@@ -1679,3 +1679,108 @@ skygw_query_op_t query_classifier_get_operation(GWBUF* querybuf)
   }
 	return operation;
 }
+
+/*
+ * Frees the TableSchema object
+ */
+static void free_table_schema(TableSchema *tbl)
+{
+    if (!tbl)
+        return;
+
+    if (tbl->dbname)
+        free(tbl->dbname);
+
+    if (tbl->tblname)
+        free(tbl->tblname);
+
+    free(tbl);
+}
+
+
+/*
+ * Initialize ColumnDef from Create_field. Take only requird from Create_field
+ *
+ * @return new ColumnDef object
+ */
+static ColumnDef *make_column_def(Create_field *field)
+{
+    String defstr;
+    ColumnDef *cdef = (ColumnDef *)calloc(1, sizeof(ColumnDef));
+    if (cdef == NULL)
+    {
+        LOGIF(LD, (skygw_log_write_flush(LOGFILE_DEBUG, 
+                "%s: cannot allocate memory. line: %d.\n",
+                __FILE__, __LINE__)));
+        return NULL;
+    }
+
+    cdef->colname = strdup(field->field_name);
+    cdef->type = field->sql_type;
+
+    if (field->def)
+        cdef->defval = strdup(field->def->val_str(&defstr)->ptr());
+
+    return cdef;
+}
+
+/*
+ * Given CREATE TABLE command, extract the table schema from it.
+ *
+ * TODO:    Handle special create commands. e.g. CREATE with SELECT, 
+ *          CREATE with LIKE, etc.
+ *
+ * @return TableSchema object
+ */
+TableSchema *skygw_get_schema_from_create(GWBUF *buf)
+{
+    LEX *lex = NULL;
+    TABLE_LIST *tbl = NULL;
+    TableSchema *schema = NULL;
+    Create_field *field = NULL;
+    List_iterator<Create_field> iter;
+    ColumnDef *cdef = NULL;
+
+    if ((lex = get_lex(buf)) == NULL)
+        goto schema_end;
+
+    tbl = lex->current_select->table_list.first;
+
+    // all fields are initialized to zero
+    if ((schema = (TableSchema *)calloc(1, sizeof(TableSchema))) == NULL)
+    {
+        LOGIF(LD, (skygw_log_write_flush(LOGFILE_DEBUG, 
+                        "%s: cannot allocate memory.\n", __func__)));
+        goto schema_end;
+    }
+
+    schema->tblname = strdup(tbl->table_name);
+
+    iter.init(lex->alter_info.create_list);
+    while ((field = iter++))
+    {
+        cdef = make_column_def(field);
+        if (cdef == NULL)
+            goto schema_free;
+
+        if (schema->head == NULL)
+            schema->head = schema->tail = cdef;
+        else
+        {
+            schema->tail->next = cdef;
+            schema->tail = cdef;
+        }
+
+        schema->ncolumns++;
+    }
+
+    goto schema_end;
+
+schema_free:
+    free_table_schema(schema);
+
+schema_end:
+
+    return schema;
+}
+

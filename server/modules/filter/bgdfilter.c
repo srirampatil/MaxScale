@@ -296,23 +296,14 @@ create_dir(char *path)
 static void
 log_insert_data(BGD_INSTANCE *bgd_instance, BGD_SESSION *bgd_session, GWBUF *queue)
 {
-    int number_of_table_names = 0;
-    char **table_names = NULL;
     char *file_name = bgd_session->current_table_data_file;
+    TABLE_INFO *tinfo = NULL;
 
     LOGIF(LD, (skygw_log_write_flush(
                     LOGFILE_DEBUG, 
                     "bgdfilter: %s.\n", __func__)));
 
-    table_names = skygw_get_table_names(queue, &number_of_table_names, TRUE);
-    if (number_of_table_names == 0)
-    {
-        LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
-                        "bgdfilter: No tables found.\n")));
-        return;
-    }
-
-    TABLE_INFO *tinfo = hashtable_fetch(bgd_instance->htable, file_name);
+    tinfo = hashtable_fetch(bgd_instance->htable, file_name);
     if (tinfo == NULL || tinfo->fp == NULL)
     {
         LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
@@ -574,7 +565,7 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
         bgd_session->current_table_data_file = table_file;
         bgd_session->active = true;
     }
-
+   
 route_query_end:
     return bgd_session->down.routeQuery(bgd_session->down.instance, 
                     bgd_session->down.session, queue);
@@ -588,13 +579,15 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
     BGD_SESSION *bgd_session = (BGD_SESSION *)fsession;
     bool success = true;
     GWBUF *queue = bgd_session->query_buf;
+    TableSchema *schema = NULL;
+    ColumnDef *cdef = NULL;
+    bool is_sql;
 
     unsigned char *ptr = (unsigned char *)reply->start;
 
     LOGIF(LD, (skygw_log_write_flush(
-				LOGFILE_DEBUG,
-				"bgdfilter: %s.\n",
-				__func__)));
+				LOGFILE_DEBUG, "bgdfilter: %s - %s.\n", __func__,
+                ((bgd_session->active)?"session active":"session inactive"))));
 
     if (!bgd_session->active)
       goto client_reply_end; 
@@ -616,9 +609,11 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
 
         bgd_session->current_db = bgd_session->new_db;
         bgd_session->new_db = NULL;
+        goto client_reply_end;
     }
 
-    if (modutil_is_SQL(queue))
+    is_sql = modutil_is_SQL(queue);
+    if (is_sql)
     {
         if (!query_is_parsed(queue))
             success = parse_query(queue);
@@ -629,10 +624,36 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
             goto client_reply_end;
         }
 
-        switch (query_classifier_get_operation(queue))
+        int op = query_classifier_get_operation(queue);
+        switch (op)
         {
         case QUERY_OP_INSERT:              
             log_insert_data(bgd_instance, bgd_session, queue);
+            break;
+
+        case QUERY_OP_CREATE_TABLE:
+            schema = skygw_get_schema_from_create(bgd_session->query_buf);
+    
+            LOGIF(LD, (skygw_log_write_flush(
+				LOGFILE_DEBUG, "bgdfilter: %s -> %d.\n",
+                schema->tblname, schema->ncolumns)));
+
+            cdef = schema->head;
+            while (cdef != NULL)
+            {
+                LOGIF(LD, (skygw_log_write_flush(
+				        LOGFILE_DEBUG, "bgdfilter: %s -> %s.\n",
+                        cdef->colname, (char *)cdef->defval)));
+                cdef = cdef->next;
+            }
+
+            break;
+
+        default:
+            LOGIF(LD, (skygw_log_write_flush(
+				LOGFILE_DEBUG,
+				"bgdfilter: not detected %d %s.\n", op,
+				modutil_get_query(queue))));
             break;
         }
     }

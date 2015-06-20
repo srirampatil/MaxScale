@@ -117,6 +117,31 @@ char*           skygw_get_qtype_str(skygw_query_type_t qtype);
 char*			skygw_get_affected_fields(GWBUF* buf);
 char** skygw_get_database_names(GWBUF* querybuf,int* size);
 
+
+typedef struct column_def ColumnDef;
+
+typedef struct table_schema
+{
+    char *dbname;           // database name
+    char *tblname;          // table name
+
+    int ncolumns;           // number of columns
+
+    ColumnDef *head;        // head of list of columns
+    ColumnDef *tail;        // tail of list of columns
+} TableSchema;
+
+struct column_def
+{
+    enum enum_field_types type;     // columns data type
+    char *colname;                  // column name
+    void *defval;                   // default value
+
+    ColumnDef *next;                // next column
+};
+
+TableSchema *skygw_get_schema_from_create(GWBUF *);
+
 EXTERN_C_BLOCK_END
 
 #endif
