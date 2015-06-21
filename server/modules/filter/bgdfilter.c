@@ -132,8 +132,8 @@ struct bgd_session {
 
     GWBUF *query_buf;
 
-    char *current_db;       // Current database name 
-    char *new_db;           // Used when trying to change database (USE DB)
+    char *default_db;       // Current database name 
+    char *active_db;           // Used when trying to change database (USE DB)
 
     char *current_table_data_file;
 
@@ -443,14 +443,14 @@ static void *newSession(FILTER *instance, SESSION *session)
 				"bgdfilter: %s.\n",
 				__func__)));
 
-    bgd_session->new_db = NULL;
+    bgd_session->active_db = NULL;
     bgd_session->query_buf = NULL;
-    bgd_session->current_db = NULL;
+    bgd_session->default_db = NULL;
     bgd_session->active = false;
     bgd_session->current_table_data_file = NULL;
 
     if(ses_data->db != NULL)
-        bgd_session->current_db = strdup(ses_data->db);
+        bgd_session->default_db = strdup(ses_data->db);
 
     return bgd_session;
 }
@@ -520,6 +520,7 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
     char **table_names = NULL;
     bool success = true;
     char *table_file = NULL;
+    char *tbl = NULL, *db = NULL;
 
     LOGIF(LD, (skygw_log_write_flush(
 				LOGFILE_DEBUG,
@@ -528,7 +529,10 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
     // Check if user is changing database
     if (*((char *)(queue->start + 4)) == MYSQL_COM_INIT_DB)
     {
-        bgd_session->new_db = strdup((char *) (queue->start + 5));
+        if (bgd_session->active_db)
+            free(bgd_session->active_db);
+
+        bgd_session->active_db = strdup((char *) (queue->start + 5));
         bgd_session->active = true;
         goto route_query_end;
     }
@@ -550,8 +554,37 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
         if(number_of_tables == 0)
             goto route_query_end;
 
-        generate_data_file_name(bgd_session->current_db, table_names[0], 
-                                    &table_file);
+        // Handling the case where db.table is specified in the query
+        if (strstr(table_names[0], "."))
+        {
+            char *tok = strtok(table_names[0], ".");
+            while (tok)
+            {
+                if (!db)
+                    db = tok;
+                else if (!tbl)
+                    tbl = tok;
+                    
+                tok = strtok(NULL, ".");
+            }
+
+            if (bgd_session->active_db)
+                free(bgd_session->active_db);
+
+            bgd_session->active_db = strdup(db);
+        }
+        else
+        {
+            db = bgd_session->default_db;
+            tbl = table_names[0];
+
+            if (bgd_session->active_db)
+                free(bgd_session->active_db);
+
+            bgd_session->active_db = strdup(db);
+        }
+
+        generate_data_file_name(db, tbl, &table_file);
 
         if (hashtable_fetch(bgd_instance->htable, table_file) == NULL)
         {
@@ -594,21 +627,21 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
 
     if (PTR_IS_ERR(ptr) || bgd_session->query_buf == NULL || !PTR_IS_OK(ptr))
     {
-        if (bgd_session->new_db != NULL)
+        if (bgd_session->active_db != NULL)
         {
-            free(bgd_session->new_db);
-            bgd_session->new_db = NULL;
+            free(bgd_session->active_db);
+            bgd_session->active_db = NULL;
         }
         goto client_reply_end;
     }
 
-    if (bgd_session->new_db != NULL)
+    if (*((char *)(queue->start + 4)) == MYSQL_COM_INIT_DB)
     {
-        if (bgd_session->current_db != NULL)
-            free(bgd_session->current_db);
+        if (bgd_session->default_db != NULL)
+            free(bgd_session->default_db);
 
-        bgd_session->current_db = bgd_session->new_db;
-        bgd_session->new_db = NULL;
+        bgd_session->default_db = bgd_session->active_db;
+        bgd_session->active_db = NULL;
         goto client_reply_end;
     }
 
@@ -633,10 +666,7 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
 
         case QUERY_OP_CREATE_TABLE:
             schema = skygw_get_schema_from_create(bgd_session->query_buf);
-    
-            LOGIF(LD, (skygw_log_write_flush(
-				LOGFILE_DEBUG, "bgdfilter: %s -> %d.\n",
-                schema->tblname, schema->ncolumns)));
+            schema->dbname = strdup(bgd_session->active_db);
 
             cdef = schema->head;
             while (cdef != NULL)
@@ -764,11 +794,11 @@ static void free_bgd_session(BGD_SESSION *session)
     if (session->query_buf != NULL)
         free(session->query_buf);
 
-    if (session->current_db != NULL)
-        free(session->current_db);
+    if (session->default_db != NULL)
+        free(session->default_db);
 
-    if (session->new_db != NULL)
-        free(session->new_db);
+    if (session->active_db != NULL)
+        free(session->active_db);
 
     if (session->current_table_data_file != NULL)
         free(session->current_table_data_file);
@@ -798,12 +828,17 @@ void free_table_info(void *param)
 
 void generate_data_file_name(char *dbname, char *tblname, char **file_name)
 {
-    *file_name = (char *)calloc(1, strlen(dbname)
-                                        + strlen(tblname)
-                                        + extn_length
-                                        + 1     // for .
-                                        + 1);   // for null termination
+    // 1 for . and 1 for null termination
+    int size = strlen(tblname) + extn_length + 1 + 1;
+    if (dbname)
+        size += strlen(dbname);
 
-    if(*file_name != NULL)
-        sprintf(*file_name, "%s.%s%s", dbname, tblname, DATA_FILE_EXTN);
+    *file_name = (char *)calloc(1, size);
+    if (*file_name != NULL)
+    {
+        if (dbname)
+            sprintf(*file_name, "%s.%s%s", dbname, tblname, DATA_FILE_EXTN);
+        else
+            sprintf(*file_name, "%s%s", tblname, DATA_FILE_EXTN);
+    }
 }

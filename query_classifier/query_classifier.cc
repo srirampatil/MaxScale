@@ -1719,7 +1719,7 @@ static ColumnDef *make_column_def(Create_field *field)
     cdef->type = field->sql_type;
 
     if (field->def)
-        cdef->defval = strdup(field->def->val_str(&defstr)->ptr());
+        cdef->defval = strdup(field->def->val_str_ascii(&defstr)->ptr());
 
     return cdef;
 }
