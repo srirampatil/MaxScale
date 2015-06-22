@@ -38,17 +38,12 @@
 #include <sys/stat.h>
 #include <hashtable.h>
 
+#include "bgd_constants.h"
+
 /** Defined in log_manager.cc */
 extern int            lm_enabled_logfiles_bitmask;
 extern size_t         log_ses_count[];
 extern __thread log_info_t tls_log_info;
-
-#define PARAM_OPTIONS "options"
-#define PARAM_TABLES "tables"
-
-#define TABLES_DELIM ","
-
-#define DATA_FILE_EXTN ".data"
 
 MODULE_INFO info = {
 	MODULE_API_FILTER,
@@ -88,9 +83,9 @@ static FILTER_OBJECT MyObject = {
 
 
 /*
- * TABLE_INFO structure
+ * TableInfo structure
  */
-typedef struct table_info TABLE_INFO;
+typedef struct table_info TableInfo;
 
 struct table_info
 {
@@ -99,6 +94,8 @@ struct table_info
                             
     char *data_file;        // <db name>.<table name>.data
     FILE *fp;
+
+    TableSchema *schema;
 };
 
 
@@ -111,7 +108,7 @@ typedef struct bgd_instance BGD_INSTANCE;
 struct bgd_instance {
     char *format;   /* Storage format JSON or XML (Default: JSON */
     char *path;     /* Path to a folder where to store all data files */
-    
+   
     HASHTABLE *htable;   /* Hash table mapping from file name to file pointer */
 
     BGD_INSTANCE *next;
@@ -147,36 +144,9 @@ static void free_bgd_instance(BGD_INSTANCE *);
 static void free_bgd_session(BGD_SESSION *);
 void free_table_info(void *);       // use while initializing HASHTABLE
 
-/*
- * Hash function for htable in BGD_INSTANCE
- *
- * @param key   null-terminated string to be hashed.
- * @return hash value
- */
-static int fp_hashfn(void *key)
-{
-    if(key == NULL)
-        return 0;
-
-    int hash = 0,c = 0;
-    char* ptr = key;
-    while((c = *ptr++))
-        hash = c + (hash << 6) + (hash << 16) - hash;
-
-    return hash;
-}
-
-/*
- * Comparison function for htable in BGD_INSTANCE
- *
- * @param key1  first null-terminated string to be compared
- * @param key2  second null-terminated string to be compared
- * @return zero if equal, non-zero otherwise
- */
-static int fp_cmpfn(void *key1, void *key2)
-{
-    return strcmp((char *)key1, (char *)key2);
-}
+static void generate_data_file_name(char *dbname, char *tblname, char **file_name);
+static int fp_hashfn(void *key);
+static int fp_cmpfn(void *key1, void *key2);
 
 /**
  * Implementation of the mandatory version entry point
@@ -297,7 +267,7 @@ static void
 log_insert_data(BGD_INSTANCE *bgd_instance, BGD_SESSION *bgd_session, GWBUF *queue)
 {
     char *file_name = bgd_session->current_table_data_file;
-    TABLE_INFO *tinfo = NULL;
+    TableInfo *tinfo = NULL;
 
     LOGIF(LD, (skygw_log_write_flush(
                     LOGFILE_DEBUG, 
@@ -555,9 +525,10 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
             goto route_query_end;
 
         // Handling the case where db.table is specified in the query
-        if (strstr(table_names[0], "."))
+        if (strstr(table_names[0], DOT_STR))
         {
-            char *tok = strtok(table_names[0], ".");
+            char *savedstr = NULL;
+            char *tok = strtok_r(table_names[0], DOT_STR, &savedstr);
             while (tok)
             {
                 if (!db)
@@ -565,7 +536,7 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
                 else if (!tbl)
                     tbl = tok;
                     
-                tok = strtok(NULL, ".");
+                tok = strtok_r(table_names[0], DOT_STR, &savedstr);
             }
 
             if (bgd_session->active_db)
@@ -615,6 +586,7 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
     TableSchema *schema = NULL;
     ColumnDef *cdef = NULL;
     bool is_sql;
+    TableInfo *tbl_info = NULL;
 
     unsigned char *ptr = (unsigned char *)reply->start;
 
@@ -668,14 +640,9 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
             schema = skygw_get_schema_from_create(bgd_session->query_buf);
             schema->dbname = strdup(bgd_session->active_db);
 
-            cdef = schema->head;
-            while (cdef != NULL)
-            {
-                LOGIF(LD, (skygw_log_write_flush(
-				        LOGFILE_DEBUG, "bgdfilter: %s -> %s.\n",
-                        cdef->colname, (char *)cdef->defval)));
-                cdef = cdef->next;
-            }
+            tbl_info = (TableInfo *) hashtable_fetch(bgd_instance->htable,
+                            bgd_session->current_table_data_file);
+            tbl_info->schema = schema;
 
             break;
 
@@ -711,7 +678,7 @@ static void	diagnostic(FILTER *instance, void *fsession, DCB *dcb)
 /////////////// Filter params processing ////////////////
 
 /*
- * Processes the tables parameter and stores respective TABLE_INFO objects in
+ * Processes the tables parameter and stores respective TableInfo objects in
  * HASHTABLE. Assumes that tables string is trimmed.
  *
  * @param tables    comma separated * <db>.<table> strings expected, no spaces 
@@ -727,11 +694,11 @@ static bool process_tables_param(char *tables, BGD_INSTANCE *bgd_instance)
     char *tname = strtok(tables, TABLES_DELIM);
     while (tname != NULL)
     {
-        TABLE_INFO *tinfo = (TABLE_INFO *)calloc(1, sizeof(TABLE_INFO));
+        TableInfo *tinfo = (TableInfo *)calloc(1, sizeof(TableInfo));
         if (tinfo == NULL)
         {
             LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, "bgdfilter: \
-                            Cannot allocate memory to TABLE_INFO in \
+                            Cannot allocate memory to TableInfo in \
                             function %s at line %d.", __func__,
                             __LINE__)));
  
@@ -770,6 +737,27 @@ static bool process_tables_param(char *tables, BGD_INSTANCE *bgd_instance)
 /////////////// Freeing functions ///////////////////
 
 /*
+ *  Frees the TableInfo object
+ */
+void free_table_info(void *param)
+{
+    if(param == NULL)
+        return;
+
+    TableInfo *info = (TableInfo *)param;
+    if (info->data_file != NULL)
+        free(info->data_file);
+
+    if (info->fp != NULL)
+        fclose(info->fp);
+
+    free(info);
+}
+
+
+////////////////// static functions ///////////////////
+
+/*
  * Frees BGD_INSTANCE object
  */
 static void free_bgd_instance(BGD_INSTANCE *instance)
@@ -785,6 +773,7 @@ static void free_bgd_instance(BGD_INSTANCE *instance)
 
     free(instance);
 }
+
 
 static void free_bgd_session(BGD_SESSION *session)
 {
@@ -806,27 +795,40 @@ static void free_bgd_session(BGD_SESSION *session)
     free(session);
 }
 
+
 /*
- *  Frees the TABLE_INFO object
+ * Hash function for htable in BGD_INSTANCE
+ *
+ * @param key   null-terminated string to be hashed.
+ * @return hash value
  */
-void free_table_info(void *param)
+static int fp_hashfn(void *key)
 {
-    if(param == NULL)
-        return;
+    if(key == NULL)
+        return 0;
 
-    TABLE_INFO *info = (TABLE_INFO *)param;
-    if (info->data_file != NULL)
-        free(info->data_file);
+    int hash = 0,c = 0;
+    char* ptr = key;
+    while((c = *ptr++))
+        hash = c + (hash << 6) + (hash << 16) - hash;
 
-    if (info->fp != NULL)
-        fclose(info->fp);
-
-    free(info);
+    return hash;
 }
 
-/////////////// Other ///////////////
+/*
+ * Comparison function for htable in BGD_INSTANCE
+ *
+ * @param key1  first null-terminated string to be compared
+ * @param key2  second null-terminated string to be compared
+ * @return zero if equal, non-zero otherwise
+ */
+static int fp_cmpfn(void *key1, void *key2)
+{
+    return strcmp((char *)key1, (char *)key2);
+}
 
-void generate_data_file_name(char *dbname, char *tblname, char **file_name)
+
+static void generate_data_file_name(char *dbname, char *tblname, char **file_name)
 {
     // 1 for . and 1 for null termination
     int size = strlen(tblname) + extn_length + 1 + 1;
