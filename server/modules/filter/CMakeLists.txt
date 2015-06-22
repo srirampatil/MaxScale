@@ -34,10 +34,6 @@ add_library(namedserverfilter SHARED namedserverfilter.c)
 target_link_libraries(namedserverfilter log_manager utils)
 install(TARGETS namedserverfilter DESTINATION modules)
 
-add_library(bgdfilter SHARED bgdfilter.c)
-target_link_libraries(bgdfilter query_classifier log_manager utils)
-install(TARGETS bgdfilter DESTINATION modules)
-
 if(BUILD_SLAVELAG)
   add_library(slavelag SHARED slavelag.c)
   target_link_libraries(slavelag log_manager utils query_classifier)
@@ -52,6 +48,7 @@ if(BUILD_TOOLS)
 endif()
 
 add_subdirectory(hint)
+add_subdirectory(bgd)
 
 if(BUILD_TESTS)
   add_subdirectory(test)
