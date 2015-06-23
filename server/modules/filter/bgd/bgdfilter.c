@@ -536,7 +536,7 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
                 else if (!tbl)
                     tbl = tok;
                     
-                tok = strtok_r(table_names[0], DOT_STR, &savedstr);
+                tok = strtok_r(NULL, DOT_STR, &savedstr);
             }
 
             if (bgd_session->active_db)
@@ -691,7 +691,8 @@ static bool process_tables_param(char *tables, BGD_INSTANCE *bgd_instance)
     if(tables == NULL || !strcmp(tables, ""))
         return false;
 
-    char *tname = strtok(tables, TABLES_DELIM);
+    char *savedptr = NULL;
+    char *tname = strtok_r(tables, TABLES_DELIM, &savedptr);
     while (tname != NULL)
     {
         TableInfo *tinfo = (TableInfo *)calloc(1, sizeof(TableInfo));
@@ -728,7 +729,7 @@ static bool process_tables_param(char *tables, BGD_INSTANCE *bgd_instance)
 
         hashtable_add(bgd_instance->htable, tinfo->data_file, tinfo);
 
-        tname = strtok(NULL, TABLES_DELIM);
+        tname = strtok_r(NULL, TABLES_DELIM, &savedptr);
     }
 
     return true;
