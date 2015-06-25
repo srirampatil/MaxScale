@@ -1783,4 +1783,3 @@ schema_end:
 
     return schema;
 }
-

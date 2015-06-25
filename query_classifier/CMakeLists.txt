@@ -1,4 +1,5 @@
-add_library(query_classifier SHARED query_classifier.cc)
+add_library(query_classifier SHARED query_classifier.cc table_schema.cc)
+target_link_libraries(query_classifier json-c xml2)
 install(TARGETS query_classifier DESTINATION lib)
 if(BUILD_TESTS)
   add_subdirectory(test)
