@@ -38,7 +38,8 @@
 #include <sys/stat.h>
 #include <hashtable.h>
 
-#include "bgd_constants.h"
+#include "bgdutils.h"
+#include "bgdrw.h"
 
 /** Defined in log_manager.cc */
 extern int            lm_enabled_logfiles_bitmask;
@@ -54,7 +55,6 @@ MODULE_INFO info = {
 };
 
 static char *version_str = "V1.1.1";
-static const int extn_length = strlen(DATA_FILE_EXTN);
 
 /*
  * The filter entry points
@@ -91,7 +91,8 @@ struct table_info
 {
     bool is_valid;          // identifies if the table_info is filled with 
                             // valid information
-                            
+
+    char *schema_file;    
     char *data_file;        // <db name>.<table name>.data
     FILE *fp;
 
@@ -132,7 +133,8 @@ struct bgd_session {
     char *default_db;       // Current database name 
     char *active_db;           // Used when trying to change database (USE DB)
 
-    char *current_table_data_file;
+    char *curr_data_file_path;
+    char *curr_schema_file_path;
 
     bool active;            // Not used currently
 };
@@ -144,7 +146,7 @@ static void free_bgd_instance(BGD_INSTANCE *);
 static void free_bgd_session(BGD_SESSION *);
 void free_table_info(void *);       // use while initializing HASHTABLE
 
-static void generate_data_file_name(char *dbname, char *tblname, char **file_name);
+static void build_data_file_path(char *dbname, char *tblname, char **file_name);
 static int fp_hashfn(void *key);
 static int fp_cmpfn(void *key1, void *key2);
 
@@ -188,27 +190,6 @@ FILTER_OBJECT *GetModuleObject()
 				"bgdfilter: %s.\n",
 				__func__)));
 	return &MyObject;
-}
-
-/*
- * Opens a file given folder and file names
- *
- * @param folder_path   parent forlder of the file
- * @param file_name     name of the file
- * @param mode          mode in which the file should be opened
- */
-static FILE *open_file(char *folder_path, char *file_name, char *mode)
-{
-    char *file_path = (char *)calloc(1, strlen(folder_path) + strlen(file_name)
-            + 1 /* for separator / */
-            + 1 /* for null termination */
-            );
-
-    sprintf(file_path, "%s/%s", folder_path, file_name);
-    FILE *fp = fopen(file_path, mode);
-
-    free(file_path);
-    return fp;
 }
 
 /* 
@@ -266,7 +247,7 @@ create_dir(char *path)
 static void
 log_insert_data(BGD_INSTANCE *bgd_instance, BGD_SESSION *bgd_session, GWBUF *queue)
 {
-    char *file_name = bgd_session->current_table_data_file;
+    char *file_name = bgd_session->curr_data_file_path;
     TableInfo *tinfo = NULL;
 
     LOGIF(LD, (skygw_log_write_flush(
@@ -417,7 +398,7 @@ static void *newSession(FILTER *instance, SESSION *session)
     bgd_session->query_buf = NULL;
     bgd_session->default_db = NULL;
     bgd_session->active = false;
-    bgd_session->current_table_data_file = NULL;
+    bgd_session->curr_data_file_path = NULL;
 
     if(ses_data->db != NULL)
         bgd_session->default_db = strdup(ses_data->db);
@@ -555,7 +536,7 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
             bgd_session->active_db = strdup(db);
         }
 
-        generate_data_file_name(db, tbl, &table_file);
+        build_data_file_path(db, tbl, &table_file);
 
         if (hashtable_fetch(bgd_instance->htable, table_file) == NULL)
         {
@@ -563,10 +544,10 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
             goto route_query_end;
         }
 
-        if(bgd_session->current_table_data_file != NULL)
-            free(bgd_session->current_table_data_file);
+        if(bgd_session->curr_data_file_path != NULL)
+            free(bgd_session->curr_data_file_path);
 
-        bgd_session->current_table_data_file = table_file;
+        bgd_session->curr_data_file_path = table_file;
         bgd_session->active = true;
     }
    
@@ -607,6 +588,7 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
         goto client_reply_end;
     }
 
+    // Changin the database
     if (*((char *)(queue->start + 4)) == MYSQL_COM_INIT_DB)
     {
         if (bgd_session->default_db != NULL)
@@ -636,14 +618,24 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
             log_insert_data(bgd_instance, bgd_session, queue);
             break;
 
-        case QUERY_OP_CREATE_TABLE:
+        case QUERY_OP_CREATE_TABLE: {
             schema = skygw_get_schema_from_create(bgd_session->query_buf);
             schema->dbname = strdup(bgd_session->active_db);
 
             tbl_info = (TableInfo *) hashtable_fetch(bgd_instance->htable,
-                            bgd_session->current_table_data_file);
+                            bgd_session->curr_data_file_path);
             tbl_info->schema = schema;
 
+            char *schema_file_path = (char *)calloc(1,
+                    strlen(bgd_instance->path) + 1
+                    + strlen(tbl_info->schema_file) + 1);
+            sprintf(schema_file_path, "%s/%s", bgd_instance->path, tbl_info->schema_file);
+            
+            write_object(schema_file_path, tbl_info->schema, OpWriteSchema,
+                    DataFormatJSON); 
+
+            free(schema_file_path);
+        }
             break;
 
         default:
@@ -702,15 +694,13 @@ static bool process_tables_param(char *tables, BGD_INSTANCE *bgd_instance)
                             Cannot allocate memory to TableInfo in \
                             function %s at line %d.", __func__,
                             __LINE__)));
- 
-            free_bgd_instance(bgd_instance);
             return false;
         }
 
         tinfo->is_valid = true;
 
         // +1 for null termination
-        tinfo->data_file = (char *)calloc(strlen(tname) + extn_length
+        tinfo->data_file = (char *)calloc(strlen(tname) + DATA_EXTN_LENGTH
                                        + 1, sizeof(char));
         strcpy(tinfo->data_file, tname);
         strcat(tinfo->data_file, DATA_FILE_EXTN);
@@ -722,10 +712,16 @@ static bool process_tables_param(char *tables, BGD_INSTANCE *bgd_instance)
             LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
                     "bgdfilter: Cannot open '%s/%s': %s",
                     bgd_instance->path, tinfo->data_file, strerror(err))));
-
-            free_bgd_instance(bgd_instance);
             return false;
         }
+
+        // Store schema file name
+        tinfo->schema_file = (char *)calloc(strlen(tname) + SCHEMA_EXTN_LENGTH 
+                                         + 1, sizeof(char));
+        strcpy(tinfo->schema_file, tname);
+        strcat(tinfo->schema_file, SCHEMA_FILE_EXTN);
+
+        // TODO: populate TableSchema if the file already exists
 
         hashtable_add(bgd_instance->htable, tinfo->data_file, tinfo);
 
@@ -790,8 +786,8 @@ static void free_bgd_session(BGD_SESSION *session)
     if (session->active_db != NULL)
         free(session->active_db);
 
-    if (session->current_table_data_file != NULL)
-        free(session->current_table_data_file);
+    if (session->curr_data_file_path != NULL)
+        free(session->curr_data_file_path);
 
     free(session);
 }
@@ -829,10 +825,27 @@ static int fp_cmpfn(void *key1, void *key2)
 }
 
 
-static void generate_data_file_name(char *dbname, char *tblname, char **file_name)
+static void build_data_file_path(char *dbname, char *tblname, char **file_name)
 {
     // 1 for . and 1 for null termination
-    int size = strlen(tblname) + extn_length + 1 + 1;
+    int size = strlen(tblname) + DATA_EXTN_LENGTH + 1 + 1;
+    if (dbname)
+        size += strlen(dbname);
+
+    *file_name = (char *)calloc(1, size);
+    if (*file_name != NULL)
+    {
+        if (dbname)
+            sprintf(*file_name, "%s.%s%s", dbname, tblname, DATA_FILE_EXTN);
+        else
+            sprintf(*file_name, "%s%s", tblname, DATA_FILE_EXTN);
+    }
+}
+
+static void build_schema_file_path(char *dbname, char *tblname, char **file_name)
+{
+    // 1 for . and 1 for null termination
+    int size = strlen(tblname) + SCHEMA_EXTN_LENGTH + 1 + 1;
     if (dbname)
         size += strlen(dbname);
 
