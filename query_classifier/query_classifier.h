@@ -104,6 +104,15 @@ typedef struct parsing_info_st {
 
 typedef struct column_def ColumnDef;
 
+struct column_def
+{
+    enum enum_field_types type;     // columns data type
+    char *colname;                  // column name
+    void *defval;                   // default value
+
+    ColumnDef *next;                // next column
+};
+
 typedef struct
 {
     char *dbname;           // database name
@@ -114,15 +123,6 @@ typedef struct
     ColumnDef *head;        // head of list of columns
     ColumnDef *tail;        // tail of list of columns
 } TableSchema;
-
-struct column_def
-{
-    enum enum_field_types type;     // columns data type
-    char *colname;                  // column name
-    void *defval;                   // default value
-
-    ColumnDef *next;                // next column
-};
 
 void free_table_schema(TableSchema **tblschema);
 

@@ -92,7 +92,7 @@ struct table_info
     bool is_valid;          // identifies if the table_info is filled with 
                             // valid information
 
-    char *schema_file;    
+    char *schema_file_path;    
     char *data_file;        // <db name>.<table name>.data
     FILE *fp;
 
@@ -110,7 +110,7 @@ struct bgd_instance {
     char *format;   /* Storage format JSON or XML (Default: JSON */
     char *path;     /* Path to a folder where to store all data files */
    
-    HASHTABLE *htable;   /* Hash table mapping from file name to file pointer */
+    HASHTABLE *htable;   /* Hash table mapping from file name to TableInfo */
 
     BGD_INSTANCE *next;
 };
@@ -140,6 +140,8 @@ struct bgd_session {
 };
 
 
+static void read_existing_schema(BGD_INSTANCE *bgd_instance, char *dbname,
+                char *tname, TableInfo *tinfo);
 static bool process_tables_param(char *, BGD_INSTANCE *);
 
 static void free_bgd_instance(BGD_INSTANCE *);
@@ -537,12 +539,14 @@ routeQuery(FILTER *instance, void *fsession, GWBUF *queue)
         }
 
         build_data_file_path(db, tbl, &table_file);
-
-        if (hashtable_fetch(bgd_instance->htable, table_file) == NULL)
+        TableInfo *tinfo = hashtable_fetch(bgd_instance->htable, table_file);
+        if (tinfo == NULL)
         {
             free(table_file);
             goto route_query_end;
         }
+
+        read_existing_schema(bgd_instance, db, tbl, tinfo);
 
         if(bgd_session->curr_data_file_path != NULL)
             free(bgd_session->curr_data_file_path);
@@ -567,7 +571,7 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
     TableSchema *schema = NULL;
     ColumnDef *cdef = NULL;
     bool is_sql;
-    TableInfo *tbl_info = NULL;
+    TableInfo *tinfo = NULL;
 
     unsigned char *ptr = (unsigned char *)reply->start;
 
@@ -622,19 +626,13 @@ clientReply(FILTER *instance, void *fsession, GWBUF *reply)
             schema = skygw_get_schema_from_create(bgd_session->query_buf);
             schema->dbname = strdup(bgd_session->active_db);
 
-            tbl_info = (TableInfo *) hashtable_fetch(bgd_instance->htable,
+            tinfo = (TableInfo *) hashtable_fetch(bgd_instance->htable,
                             bgd_session->curr_data_file_path);
-            tbl_info->schema = schema;
+            tinfo->schema = schema;
 
-            char *schema_file_path = (char *)calloc(1,
-                    strlen(bgd_instance->path) + 1
-                    + strlen(tbl_info->schema_file) + 1);
-            sprintf(schema_file_path, "%s/%s", bgd_instance->path, tbl_info->schema_file);
-            
-            write_object(schema_file_path, tbl_info->schema, OpWriteSchema,
+            write_object(tinfo->schema_file_path, tinfo->schema, OpWriteSchema,
                     DataFormatJSON); 
 
-            free(schema_file_path);
         }
             break;
 
@@ -683,6 +681,8 @@ static bool process_tables_param(char *tables, BGD_INSTANCE *bgd_instance)
     if(tables == NULL || !strcmp(tables, ""))
         return false;
 
+    struct stat st;
+    int error;
     char *savedptr = NULL;
     char *tname = strtok_r(tables, TABLES_DELIM, &savedptr);
     while (tname != NULL)
@@ -705,23 +705,14 @@ static bool process_tables_param(char *tables, BGD_INSTANCE *bgd_instance)
         strcpy(tinfo->data_file, tname);
         strcat(tinfo->data_file, DATA_FILE_EXTN);
 
-        tinfo->fp = open_file(bgd_instance->path, tinfo->data_file, "a");
-        if (tinfo->fp == NULL)
+        error = open_file(bgd_instance->path, tinfo->data_file, "a", tinfo->fp);
+        if (error)
         {
-            int err = errno;
             LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
                     "bgdfilter: Cannot open '%s/%s': %s",
-                    bgd_instance->path, tinfo->data_file, strerror(err))));
+                    bgd_instance->path, tinfo->data_file, strerror(error))));
             return false;
         }
-
-        // Store schema file name
-        tinfo->schema_file = (char *)calloc(strlen(tname) + SCHEMA_EXTN_LENGTH 
-                                         + 1, sizeof(char));
-        strcpy(tinfo->schema_file, tname);
-        strcat(tinfo->schema_file, SCHEMA_FILE_EXTN);
-
-        // TODO: populate TableSchema if the file already exists
 
         hashtable_add(bgd_instance->htable, tinfo->data_file, tinfo);
 
@@ -856,5 +847,36 @@ static void build_schema_file_path(char *dbname, char *tblname, char **file_name
             sprintf(*file_name, "%s.%s%s", dbname, tblname, DATA_FILE_EXTN);
         else
             sprintf(*file_name, "%s%s", tblname, DATA_FILE_EXTN);
+    }
+}
+
+static void read_existing_schema(BGD_INSTANCE *bgd_instance, char *dbname,
+                char *tname, TableInfo *tinfo)
+{
+    int error;
+    struct stat st;
+
+    LOGIF(LD, (skygw_log_write_flush(LOGFILE_DEBUG, "bgdfilter: %s", __func__)));    
+
+    if (!tinfo->schema_file_path) {
+        // Store schema file name
+        char *file_path = (char *)calloc(strlen(bgd_instance->path) + 1
+                                + strlen(tname) + SCHEMA_EXTN_LENGTH 
+                                + 1, sizeof(char));
+        sprintf(file_path, "%s/%s.%s.%s", bgd_instance->path, dbname, tname, SCHEMA_FILE_EXTN);
+
+        tinfo->schema_file_path = file_path;
+    }
+
+    if (!tinfo->schema) {
+        bzero(&st, sizeof(struct stat));
+        if (!stat(tinfo->schema_file_path, &st)) {
+            error = read_object(tinfo->schema_file_path, OpReadSchema,
+                            DataFormatJSON, tinfo->schema);
+            if (error) {
+                LOGIF(LE, (skygw_log_write_flush(LOGFILE_ERROR, 
+                    "%s", err_msg_from_code(error))));
+            }
+        }
     }
 }

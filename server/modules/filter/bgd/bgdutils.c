@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <errno.h>
 
 #include "bgdutils.h"
 
@@ -12,8 +13,9 @@
  * @param file_name     name of the file
  * @param mode          mode in which the file should be opened
  */
-FILE *open_file(char *folder_path, char *file_name, char *mode)
+int open_file(char *folder_path, char *file_name, char *mode, FILE *fp)
 {
+    int error = 0;
     char *file_path = NULL;
 
     // +1 for separator "/"
@@ -29,10 +31,12 @@ FILE *open_file(char *folder_path, char *file_name, char *mode)
     else
         sprintf(file_path, "%s", file_name);
 
-    FILE *fp = fopen(file_path, mode);
+    fp = fopen(file_path, mode);
+    if (fp == NULL)
+        error = errno;
 
     free(file_path);
-    return fp;
+    return error;
 }
 
 

@@ -40,7 +40,7 @@ typedef enum
     ErrFileRead
 } ErrCode;
 
-FILE *open_file(char *folder_path, char *file_name, char *mode);
+int open_file(char *folder_path, char *file_name, char *mode, FILE *fp);
 
 const char *err_msg_from_code(ErrCode err);
 

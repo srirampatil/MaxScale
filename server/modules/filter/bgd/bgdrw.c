@@ -1,8 +1,6 @@
-#include <table_schema.h>
-
 #include <json-c/json_object.h>
 #include <json-c/json_util.h>
-
+#include <query_classifier.h>
 #include "bgdrw.h"
 #include "bgdutils.h"
 
@@ -24,29 +22,33 @@ ErrCode write_object(char *file, void *obj, OpType optype, DataFormat format)
 }
 
 
-void *read_object(char *file, OpType optype, DataFormat format)
+int read_object(char *file, OpType optype, DataFormat format, void *data)
 {
-    void *retobj = NULL;
-    ErrCode err = ErrNone;
-
+    int error = 0;
     switch (optype)
     {
     case OpReadSchema:
         {
             TableSchema *schema = (TableSchema *)calloc(1, sizeof(TableSchema));
-            err = read_schema(file, &schema);
-            if (err != ErrNone)
-            {
-                free_table_schema(&schema);
-                return NULL;
+            if (schema == NULL) {
+                fprintf(stderr, "Unable to allocate memory:  %s - %d", __FILE__, __LINE__);
+                error = -1;
             }
+            else {
+                error = read_schema(file, &schema);
+                if (error != ErrNone)
+                {
+                    free_table_schema(&schema);
+                    return error;
+                }
 
-            retobj = schema;
+                data = schema;
+            }
         }
         break;
     }
 
-    return retobj;
+    return error;
 }
 
 /////////////////// private functions //////////////////////
@@ -65,10 +67,10 @@ static ErrCode write_schema(char *file, TableSchema *schema)
 
 static ErrCode read_schema(char *file, TableSchema **schema)
 {
-    /* struct json_object *obj = json_object_from_file(file);
+    struct json_object *obj = json_object_from_file(file);
     if (obj == NULL)
         return ErrFileRead;
 
-    *schema = table_schema_from_json(obj); */
+    *schema = table_schema_from_json(obj);
     return ErrNone;
 }
